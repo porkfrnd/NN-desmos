@@ -272,6 +272,23 @@ html { overscroll-behavior-y: contain; }
 .tabs.compact { gap: 6px; margin-bottom: 0; }
 .tabs.compact .preset-btn { padding: 5px 10px; min-height: 32px; font-size: 12.5px; }
 
+/* tuning presets */
+.tuning-row { flex-wrap: wrap; }
+.tuning-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.preset-chip {
+  padding: 6px 10px; font-size: 12px; font-weight: 600;
+  border-radius: 999px; background: var(--bg); border: 1px solid var(--border);
+}
+.preset-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+.domain-control { gap: 6px; }
+.domain-control input[type="number"] {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 6px 8px; font: 13px ui-monospace, monospace; text-align: center;
+}
+.domain-control input[type="number"]:focus { border-color: var(--accent); outline: none; }
+
 .foot { margin-top: 14px; color: var(--muted); font-size: 12.5px; text-align: center; }
 .foot a { color: var(--accent); text-decoration: none; }
 .foot a:hover { text-decoration: underline; }

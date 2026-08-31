@@ -98,6 +98,14 @@
       <button id="settingsClose" type="button" aria-label="Close">✕</button>
     </header>
     <div class="rows">
+      <div class="row tuning-row">
+        <div><b>Quick tuning</b><small>One-click presets</small></div>
+        <div class="tuning-presets">
+          <button type="button" class="preset-chip" data-tuning="smooth" title="Fourier off, GELU, low LR">Smooth</button>
+          <button type="button" class="preset-chip" data-tuning="periodic" title="Fourier on, SIREN">Periodic</button>
+          <button type="button" class="preset-chip" data-tuning="step" title="Deep ReLU">Step</button>
+        </div>
+      </div>
       <div class="row">
         <div><b>Hidden layers</b><small>1 – 5</small></div>
         <span class="control">
@@ -118,18 +126,60 @@
           <option value="tanh" selected>tanh</option>
           <option value="relu">ReLU</option>
           <option value="sigmoid">sigmoid</option>
+          <option value="softplus">Softplus</option>
+          <option value="silu">SiLU / Swish</option>
+          <option value="gelu">GELU</option>
           <option value="sine">sin — SIREN</option>
         </select>
       </div>
-      <div class="row">
-        <div><b>Fourier features</b><small>sin(2^kπx), cos(2^kπx) for k=0..3</small></div>
-        <button class="switch" id="fourierFeatures" role="switch" aria-checked="false" aria-label="Fourier features"><span class="knob"></span></button>
+      <div class="row" id="omegaRow" hidden>
+        <div><b>SIREN ω₀</b><small>1 – 30, lower for embedded inputs</small></div>
+        <span class="control">
+          <input type="range" id="omega0" min="1" max="30" step="0.5" value="30">
+          <b class="val mono" id="omega0Val">30</b>
+        </span>
       </div>
       <div class="row">
-        <div><b>Learning rate</b></div>
+        <div><b>Embedding</b><small>Input features</small></div>
+        <select id="embedding" aria-label="Embedding">
+          <option value="none" selected>None</option>
+          <option value="fourier">Fourier</option>
+          <option value="chebyshev">Chebyshev / Polynomial</option>
+        </select>
+      </div>
+      <div class="row" id="fourierNRow" hidden>
+        <div><b>Fourier max K</b><small>k = 0..N, 2·(N+1) feats</small></div>
         <span class="control">
-          <input type="range" id="learningRate" min="-3" max="-1" step="0.05" value="-3">
+          <input type="range" id="fourierN" min="0" max="5" step="1" value="3">
+          <b class="val" id="fourierNVal">3</b>
+        </span>
+      </div>
+      <div class="row" id="fourierSigmaRow" hidden>
+        <div><b>Fourier σ</b><small>frequency scale</small></div>
+        <span class="control">
+          <input type="range" id="fourierSigma" min="0.5" max="5" step="0.1" value="1">
+          <b class="val mono" id="fourierSigmaVal">1.0</b>
+        </span>
+      </div>
+      <div class="row" id="chebyshevRow" hidden>
+        <div><b>Chebyshev degree</b><small>T₀..T_N</small></div>
+        <span class="control">
+          <input type="range" id="chebyshevDegree" min="3" max="12" step="1" value="6">
+          <b class="val" id="chebyshevDegreeVal">6</b>
+        </span>
+      </div>
+      <div class="row">
+        <div><b>Learning rate</b><small>1e-4 – 1e-1 log</small></div>
+        <span class="control">
+          <input type="range" id="learningRate" min="-4" max="-1" step="0.05" value="-3">
           <b class="val mono" id="learningRateVal">1.0e-3</b>
+        </span>
+      </div>
+      <div class="row">
+        <div><b>Weight decay (L2)</b><small>0 – 1e-2</small></div>
+        <span class="control">
+          <input type="range" id="weightDecay" min="0" max="100" step="1" value="0">
+          <b class="val mono" id="weightDecayVal">0</b>
         </span>
       </div>
       <div class="row">
@@ -138,6 +188,22 @@
           <option value="adam" selected>Adam</option>
           <option value="sgd">SGD</option>
         </select>
+      </div>
+      <div class="row">
+        <div><b>Training range</b><small>x min / max</small></div>
+        <span class="control domain-control">
+          <input type="number" id="trainMin" value="-1" step="0.25" min="-3" max="3" style="width:64px">
+          <span>to</span>
+          <input type="number" id="trainMax" value="1" step="0.25" min="-3" max="3" style="width:64px">
+        </span>
+      </div>
+      <div class="row">
+        <div><b>Evaluation range</b><small>test extrapolation</small></div>
+        <span class="control domain-control">
+          <input type="number" id="evalMin" value="-2" step="0.25" min="-4" max="4" style="width:64px">
+          <span>to</span>
+          <input type="number" id="evalMax" value="2" step="0.25" min="-4" max="4" style="width:64px">
+        </span>
       </div>
       <div class="row">
         <div><b>Run to</b><small>epochs per run</small></div>

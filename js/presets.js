@@ -1,6 +1,4 @@
-// Preset target functions defined over the fixed domain x ∈ [-1, 1].
-// All live in the same coordinate system as the drawn data and the model
-// input (normalized in [-1, 1] before any feature transform / dense layer).
+// Preset target functions and tuning presets.
 
 const Presets = {
   SIN: 'sine',
@@ -43,26 +41,50 @@ const PRESET_DEFS = {
   },
 };
 
-// Domain constants (shared coordinate system)
+// One-click tuning presets for architecture/hyperparams
+const TUNING_PRESETS = {
+  smooth: {
+    name: 'Smooth / Polynomial',
+    desc: 'GELU, no Fourier, low LR',
+    config: {
+      model: { hiddenLayers: 3, neuronsPerLayer: 16, activation: 'gelu', embedding: 'none', fourierN: 3, fourierSigma: 1, chebyshevDegree: 6, omega0: 30 },
+      training: { learningRate: 0.0005, weightDecay: 0.0001, optimizer: 'adam' },
+    },
+  },
+  periodic: {
+    name: 'Periodic / High Freq',
+    desc: 'Fourier + SIREN',
+    config: {
+      model: { hiddenLayers: 3, neuronsPerLayer: 24, activation: 'sine', embedding: 'fourier', fourierN: 4, fourierSigma: 1.2, omega0: 30 },
+      training: { learningRate: 0.001, weightDecay: 0, optimizer: 'adam' },
+    },
+  },
+  step: {
+    name: 'Discontinuous / Step',
+    desc: 'Deep ReLU, no Fourier',
+    config: {
+      model: { hiddenLayers: 5, neuronsPerLayer: 24, activation: 'relu', embedding: 'none', omega0: 30 },
+      training: { learningRate: 0.001, weightDecay: 0.0005, optimizer: 'adam' },
+    },
+  },
+};
+
 const DOMAIN_MIN = -1;
 const DOMAIN_MAX = 1;
 
-// Produce 100 evenly-spaced samples of a preset function over the domain.
-function samplePreset(id, count = 100) {
+function samplePreset(id, count = 100, trainMin = DOMAIN_MIN, trainMax = DOMAIN_MAX) {
   const def = PRESET_DEFS[id];
   if (!def || !def.fn) return null;
-  const xs = [];
-  const ys = [];
+  const xs = [], ys = [];
   for (let i = 0; i < count; i++) {
     const t = count === 1 ? 0 : i / (count - 1);
-    const x = DOMAIN_MIN + (DOMAIN_MAX - DOMAIN_MIN) * t;
+    const x = trainMin + (trainMax - trainMin) * t;
     xs.push(x);
     ys.push(def.fn(x));
   }
   return { xs, ys };
 }
 
-// Clip a set of y values to roughly [-1.5, 1.5] for stable training.
 function clipYs(ys, limit = 1.5) {
   return ys.map((y) => Math.max(-limit, Math.min(limit, y)));
 }

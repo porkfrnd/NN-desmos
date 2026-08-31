@@ -87,24 +87,23 @@ const Equation = (() => {
     return { fn, expr, src: normalize(src) };
   }
 
-  function sample(compiled, count = 100) {
+  function sample(compiled, count = 100, trainMin = -1, trainMax = 1) {
     const fn = compiled.fn;
     const xs = [], ys = [];
     for (let i = 0; i < count; i++) {
-      const x = -1 + (2 * i) / (count - 1);
+      const x = trainMin + (trainMax - trainMin) * i / (count - 1);
       let y;
       try { y = fn(x); } catch (_) { y = NaN; }
-      if (!isFinite(y)) y = Math.sign(y || 0) * 1.5; // push OOB to clip edge
+      if (!isFinite(y)) y = Math.sign(y || 0) * 1.5;
       xs.push(x);
       ys.push(y);
     }
     return { xs, ys: clipYs(ys) };
   }
 
-  // convenience: string -> {xs,ys} or throws
-  function sampleString(src, count = 100) {
+  function sampleString(src, count = 100, trainMin = -1, trainMax = 1) {
     const c = compile(src);
-    return { compiled: c, ...sample(c, count) };
+    return { compiled: c, ...sample(c, count, trainMin, trainMax) };
   }
 
   return { normalize, transpile, compile, sample, sampleString };

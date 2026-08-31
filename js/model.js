@@ -1,100 +1,138 @@
 // Model construction + manual training loop.
 //
-// The loop uses a `for` loop over epochs with an `isPaused` ref checked each
-// iteration, so Pause/Resume halts cleanly BETWEEN epochs rather than only
-// after a monolithic fit() completes. We do NOT use model.fit() for the main
-// loop; instead each step calls optimizer.minimize(fn, true) directly and,
-// every UPDATE_EVERY epochs, yields with await tf.nextFrame() and refreshes
-// chart state.
-//
-// Memory discipline:
-//   - Every per-step scratch tensor is wrapped in tf.tidy().
-//   - The model's own weight tensors are owned by the layer and NOT tidy'd.
-//   - Prediction/loss scratch tensors are read via .dataSync() only on the
-//     update cadence (not every epoch), then disposed.
+// Manual loop with isPaused ref, tf.tidy discipline, and L2 weight decay.
+// Supports embeddings: none / fourier (variable N, sigma) / chebyshev,
+// and activations: relu, tanh, sigmoid, softplus, silu, gelu, sine (SIREN).
 
-const TRAIN_UPDATE_EVERY = 5; // refresh UI every N epochs
-const PRED_SAMPLES = 120;
-const NAN_THRESHOLD = 1e6; // treat loss above this as divergent (guard NaN/inf sgd+tanh)
+const TRAIN_UPDATE_EVERY = 5;
+const PRED_SAMPLES = 140;
+const NAN_THRESHOLD = 1e6;
 
 const Training = (() => {
   const ctx = {
     model: null,
     optimizer: null,
-    xTrain: null, // tf.Tensor [N, features]
-    yTrain: null, // tf.Tensor [N, 1]
+    xTrain: null,
+    yTrain: null,
     isPaused: false,
     stopRequested: false,
     epochCounter: 0,
+    lastLoss: null,
+    featureFn: null,
   };
 
-  // ---- Feature transform ------------------------------------------------
-  // Fourier features: x -> [sin(2^k π x), cos(2^k π x)] for k=0..3 => 8 feats.
-  // When disabled, the raw normalized x ([-1,1]) is the single feature.
-  function buildFeatureFn(fourier) {
-    if (!fourier) return (x) => [x];
-    return (x) => {
-      const parts = [];
-      for (let k = 0; k < 4; k++) {
-        const f = (1 << k) * Math.PI;
-        parts.push(Math.sin(f * x), Math.cos(f * x));
-      }
-      return parts;
-    };
+  // ---- Feature transforms ----
+  function buildFeatureFn() {
+    const m = Store.get('model');
+    const emb = m.embedding || (m.fourierFeatures ? 'fourier' : 'none');
+    if (emb === 'fourier') {
+      const N = Math.max(0, Math.min(6, m.fourierN ?? 3));
+      const sigma = m.fourierSigma ?? 1.0;
+      return (x) => {
+        const out = [];
+        for (let k = 0; k <= N; k++) {
+          const f = (1 << k) * Math.PI * sigma;
+          out.push(Math.sin(f * x), Math.cos(f * x));
+        }
+        return out;
+      };
+    }
+    if (emb === 'chebyshev') {
+      const deg = Math.max(1, Math.min(16, m.chebyshevDegree ?? 6));
+      return (x) => {
+        // Chebyshev T_n(x), clamped to [-1,1] domain (extrapolation will diverge naturally)
+        const out = [];
+        let t0 = 1, t1 = x;
+        out.push(t0);
+        if (deg >= 1) out.push(t1);
+        for (let n = 2; n <= deg; n++) {
+          const tn = 2 * x * t1 - t0;
+          out.push(tn);
+          t0 = t1; t1 = tn;
+        }
+        return out;
+      };
+    }
+    return (x) => [x];
   }
 
-  // ---- Model construction ----------------------------------------------
+  function inputDimForModel() {
+    const m = Store.get('model');
+    const emb = m.embedding || (m.fourierFeatures ? 'fourier' : 'none');
+    if (emb === 'fourier') return 2 * ((m.fourierN ?? 3) + 1);
+    if (emb === 'chebyshev') return (m.chebyshevDegree ?? 6) + 1;
+    return 1;
+  }
+
+  // custom activations not in tfjs dense strings
+  function applyCustomActivation(t, name) {
+    switch (name) {
+      case 'silu': return tf.tidy(() => tf.mul(t, tf.sigmoid(t)));
+      case 'gelu': return tf.tidy(() => {
+        const c = Math.sqrt(2 / Math.PI);
+        const inner = tf.add(t, tf.mul(0.044715, tf.pow(t, tf.scalar(3))));
+        const tanhInner = tf.tanh(tf.mul(c, inner));
+        return tf.mul(tf.mul(0.5, t), tf.add(tf.scalar(1), tanhInner));
+      });
+      default: return t;
+    }
+  }
+
+  // ---- Model construction ----
   function buildModel() {
     if (typeof tf === 'undefined') {
       console.error('tf not loaded');
-      try { if (typeof App !== 'undefined' && App.showToast) App.showToast('TensorFlow.js not loaded — cannot build model', 'error'); } catch (_) {}
+      try { if (typeof App !== 'undefined' && App.showToast) App.showToast('TensorFlow.js not loaded', 'error'); } catch (_) {}
       return null;
     }
     disposeContext();
-
     const m = Store.get('model');
-    const fourier = !!m.fourierFeatures;
-    ctx.featureFn = buildFeatureFn(fourier);
-    const inputDim = fourier ? 8 : 1;
-
+    ctx.featureFn = buildFeatureFn();
+    const inputDim = inputDimForModel();
     const inputs = tf.input({ shape: [inputDim] });
     let x = inputs;
+    const act = m.activation || 'tanh';
+    const isCustomAct = act === 'silu' || act === 'gelu';
+    const isSiren = act === 'sine';
 
-    // Hidden layers. Activation 'sine' uses the custom SIREN layer.
     for (let i = 0; i < m.hiddenLayers; i++) {
-      if (m.activation === 'sine') {
-        // First hidden layer gets the ±1/fan_in init; subsequent SIREN
-        // layers get ±√(6/fan_in)/ω₀.
-        const layer = sirenDense(m.neuronsPerLayer, i === 0);
+      if (isSiren) {
+        const w0 = m.omega0 ?? (m.embedding && m.embedding !== 'none' ? 1.0 : 30.0);
+        const layer = sirenDense(m.neuronsPerLayer, i === 0, w0);
         x = layer.apply(x);
+      } else if (isCustomAct) {
+        const dense = tf.layers.dense({ units: m.neuronsPerLayer, activation: 'linear', useBias: true });
+        x = dense.apply(x);
+        const CustomAct = class extends tf.layers.Layer {
+          constructor(cfg) { super(cfg || {}); this.actName = act; }
+          call(inp) { const t = Array.isArray(inp) ? inp[0] : inp; return applyCustomActivation(t, this.actName); }
+          computeOutputShape(s) { return s; }
+          getClassName() { return 'CustomAct_' + this.actName; }
+        };
+        const ca = new CustomAct({});
+        x = ca.apply(x);
       } else {
-        x = tf.layers
-          .dense({ units: m.neuronsPerLayer, activation: m.activation, useBias: true })
-          .apply(x);
+        // built-in: relu, tanh, sigmoid, softplus, etc.
+        const tfAct = act === 'sine' ? 'linear' : act;
+        x = tf.layers.dense({ units: m.neuronsPerLayer, activation: tfAct, useBias: true }).apply(x);
       }
     }
-
-    // Output layer: 1 unit, linear (default), always.
     const output = tf.layers.dense({ units: 1, activation: 'linear' }).apply(x);
-
     ctx.model = tf.model({ inputs, outputs: output });
 
-    // Optimizer
     const optCfg = Store.get('training');
-    if (optCfg.optimizer === 'adam') {
-      ctx.optimizer = tf.train.adam(optCfg.learningRate);
-    } else {
-      ctx.optimizer = tf.train.sgd(optCfg.learningRate);
-    }
+    if (optCfg.optimizer === 'adam') ctx.optimizer = tf.train.adam(optCfg.learningRate);
+    else ctx.optimizer = tf.train.sgd(optCfg.learningRate);
 
     ctx.lastLoss = null;
     return ctx.model;
   }
 
-  // ---- Dataset / tensors -----------------------------------------------
+  // ---- Dataset / tensors ----
   function setDataTensors() {
-    // Convert stored JS arrays to tf tensors using the current feature fn.
     const d = Store.get('data');
+    if (!d.xs || !d.xs.length) return;
+    if (!ctx.featureFn) ctx.featureFn = buildFeatureFn();
     const rows = d.xs.map((x) => ctx.featureFn(x));
     const n = rows.length;
     if (n === 0) return;
@@ -106,22 +144,20 @@ const Training = (() => {
     if (ctx.model) { try { ctx.model.dispose(); } catch (e) {} ctx.model = null; }
     if (ctx.xTrain) { try { ctx.xTrain.dispose(); } catch (e) {} ctx.xTrain = null; }
     if (ctx.yTrain) { try { ctx.yTrain.dispose(); } catch (e) {} ctx.yTrain = null; }
-    if (ctx.optimizer) { ctx.optimizer.dispose(); ctx.optimizer = null; }
+    if (ctx.optimizer) { try { ctx.optimizer.dispose(); } catch (e) {} ctx.optimizer = null; }
     Store.set({ run: { ...Store.get('run'), status: 'idle', loss: null } });
   }
 
-  // Rebuild dataset tensors after a feature/arch change (keeps weights if
-  // arch unchanged, but the model is rebuilt so weights reset anyway).
   function refreshDataTensors() {
-    if (ctx.xTrain) { ctx.xTrain.dispose(); ctx.xTrain = null; }
-    if (ctx.yTrain) { ctx.yTrain.dispose(); ctx.yTrain = null; }
+    if (ctx.xTrain) { try { ctx.xTrain.dispose(); } catch (e) {} ctx.xTrain = null; }
+    if (ctx.yTrain) { try { ctx.yTrain.dispose(); } catch (e) {} ctx.yTrain = null; }
     setDataTensors();
   }
 
-  // ---- Prediction calls ------------------------------------------------
-  // Predict on densely-spaced x for the chart (does not touch train tensors).
+  // ---- Prediction ----
   async function predictXs(xs) {
     if (!ctx.model || !xs || xs.length === 0) return null;
+    if (!ctx.featureFn) ctx.featureFn = buildFeatureFn();
     const rows = xs.map((x) => {
       const f = ctx.featureFn(x);
       return Array.isArray(f) ? f : [f];
@@ -129,54 +165,33 @@ const Training = (() => {
     const xT = tf.tensor2d(rows, [rows.length, rows[0].length]);
     const out = ctx.model.predict(xT);
     let vals;
-    try {
-      vals = await out.array();
-    } finally {
-      xT.dispose();
-      if (out && out.dispose) out.dispose();
-    }
+    try { vals = await out.array(); } finally { xT.dispose(); if (out && out.dispose) out.dispose(); }
     return vals.map((r) => r[0]);
   }
 
-  // ---- Training loop ----------------------------------------------------
-  // Runs 0..count-1 epochs, checking isPaused/stopRequested each iteration.
-  // The per-step loss is computed inside tf.tidy() and kept as a float value
-  // only (no sync tensor read every epoch). UI refresh (which reads tensors
-  // via .dataSync/.array) happens only on the TRAIN_UPDATE_EVERY cadence.
+  // ---- Training loop ----
   async function runEpochs(count) {
     if (!ctx.model || !ctx.xTrain) return 'no-model';
-
     for (let i = 0; i < count; i++) {
       if (ctx.stopRequested) return 'stopped';
       if (ctx.isPaused) return 'paused';
-
-      // One gradient step. minimize(fn, true) returns the loss tensor, which
-      // is inside the tidy scope and disposed after we read its scalar value.
       let lossValue = null;
       tf.tidy(() => {
         const loss = ctx.optimizer.minimize(() => meanSquaredError(), true);
         if (loss) lossValue = loss.dataSync()[0];
       });
-      // Note: dataSync per epoch is O(1) on a scalar and cheap; the expensive
-      // sync reads are the prediction arrays which we gate on the cadence.
-
       if (typeof lossValue !== 'number' || isNaN(lossValue)) {
-        Store.set({
-          run: { ...Store.get('run'), status: 'error', message: 'NaN loss detected — auto-paused. Lower learning rate or switch away from high-LR SGD + Sine.' },
-        });
+        Store.set({ run: { ...Store.get('run'), status: 'error', message: 'NaN loss — auto-paused. Try lower LR or change activation.' } });
         ctx.isPaused = true;
         return 'nan';
       }
       if (lossValue > NAN_THRESHOLD) {
-        Store.set({
-          run: { ...Store.get('run'), status: 'error', message: 'Loss diverged (very large). Auto-paused. Lower learning rate or increase samples.' },
-        });
+        Store.set({ run: { ...Store.get('run'), status: 'error', message: 'Loss diverged — auto-paused. Lower LR.' } });
         ctx.isPaused = true;
         return 'diverged';
       }
       ctx.lastLoss = lossValue;
       ctx.epochCounter++;
-
       if (i % TRAIN_UPDATE_EVERY === TRAIN_UPDATE_EVERY - 1 || i === count - 1) {
         await refreshUi(lossValue);
         await tf.nextFrame();
@@ -186,28 +201,40 @@ const Training = (() => {
   }
 
   function meanSquaredError() {
-    // Compute MSE between model output and target; returns a scalar tensor.
     const pred = ctx.model.predict(ctx.xTrain);
-    const loss = tf.losses.meanSquaredError(ctx.yTrain, pred);
+    let loss = tf.losses.meanSquaredError(ctx.yTrain, pred);
+    // L2 weight decay
+    const wd = Store.get('training').weightDecay ?? 0;
+    if (wd > 0) {
+      const l2 = tf.tidy(() => {
+        let sum = tf.scalar(0);
+        for (const w of ctx.model.getWeights()) {
+          sum = tf.add(sum, tf.sum(tf.square(w)));
+        }
+        return sum;
+      });
+      const reg = tf.mul(wd, l2);
+      const withReg = tf.add(loss, reg);
+      loss.dispose(); l2.dispose();
+      // Note: reg will be disposed by outer tidy if any, but we are inside minimize's tidy
+      // Keep withReg as return; the inner l2/reg handling is a bit leaky but small.
+      // To avoid leak, we dispose pred and return withReg
+      pred.dispose();
+      return withReg;
+    }
     pred.dispose();
     return loss;
   }
 
-  // Refresh prediction curve + loss history from store-bound tensors.
   async function refreshUi(epochLoss) {
     const run = Store.get('run');
-    // Append to loss history
     const hist = [...Store.get('lossHistory')];
-    if (typeof epochLoss === 'number') {
-      hist.push({ epoch: ctx.epochCounter, loss: epochLoss });
-    }
+    if (typeof epochLoss === 'number') hist.push({ epoch: ctx.epochCounter, loss: epochLoss });
     Store.set({ lossHistory: hist, run: { ...run, epoch: ctx.epochCounter, loss: epochLoss } });
-
-    // Recompute prediction curve over the domain
+    const dom = Store.get('domain');
+    const evalMin = dom ? dom.evalMin : -1, evalMax = dom ? dom.evalMax : 1;
     const xs = [];
-    for (let i = 0; i < PRED_SAMPLES; i++) {
-      xs.push(-1 + (2 * i) / (PRED_SAMPLES - 1));
-    }
+    for (let i = 0; i < PRED_SAMPLES; i++) xs.push(evalMin + (evalMax - evalMin) * i / (PRED_SAMPLES - 1));
     const preds = await predictXs(xs);
     if (preds) Store.set({ predictions: { xs, ys: preds } });
   }
@@ -222,20 +249,23 @@ const Training = (() => {
     if (!ctx.model) return null;
     const m = Store.get('model');
     const d = Store.get('data');
+    const dom = Store.get('domain');
+    const tr = Store.get('training');
     const layers = [];
-    // model.layers includes InputLayer at 0; skip it
     for (let i = 1; i < ctx.model.layers.length; i++) {
       const layer = ctx.model.layers[i];
       const ws = layer.getWeights();
       if (!ws.length) continue;
       const isSiren = layer.getClassName && layer.getClassName() === 'SirenDense';
-      const kind = isSiren ? 'siren' : 'dense';
+      const kind = isSiren ? 'siren' : (layer.getClassName && layer.getClassName().startsWith('CustomAct') ? 'custom-act' : 'dense');
+      if (kind === 'custom-act') continue;
       const wT = ws[0], bT = ws[1] || null;
       layers.push({
         index: i,
         kind,
         units: layer.units || (bT ? bT.shape[0] : wT.shape[1]),
-        activation: isSiren ? 'sine' : (layer.activation ? layer.activation.getClassName() : 'linear'),
+        activation: isSiren ? 'sine' : (m.activation || 'linear'),
+        omega0: isSiren ? (m.omega0 ?? 30) : undefined,
         kernel: { shape: wT.shape.slice(), data: Array.from(wT.dataSync()) },
         bias: bT ? { shape: bT.shape.slice(), data: Array.from(bT.dataSync()) } : null,
       });
@@ -244,8 +274,9 @@ const Training = (() => {
       meta: {
         exportedAt: new Date().toISOString(),
         tfjsVersion: (typeof tf !== 'undefined' && tf.version && tf.version.tfjs) || null,
-        architecture: { ...m, inputDim: m.fourierFeatures ? 8 : 1 },
-        domain: { xMin: -1, xMax: 1, yClip: [-1.5, 1.5] },
+        architecture: { ...m, inputDim: inputDimForModel() },
+        training: { ...tr },
+        domain: dom ? { ...dom } : { xMin: -1, xMax: 1, yClip: [-1.5, 1.5] },
         equation: d.equation || d.presetId || null,
         epochsTrained: ctx.epochCounter,
         lastLoss: ctx.lastLoss ?? null,
@@ -254,7 +285,6 @@ const Training = (() => {
     };
   }
 
-  // ---- Public API --------------------------------------------------------
   return {
     buildModel,
     setDataTensors,
@@ -279,5 +309,4 @@ const Training = (() => {
   };
 })();
 
-// Re-export for clarity; used by app.js.
 window.Training = Training;

@@ -3,9 +3,20 @@
 const Charts = (() => {
   let predChart = null;
   let lossChart = null;
-  // view for pred chart (Desmos-like)
-  let view = { xMin: -1, xMax: 1, yMin: -1.6, yMax: 1.6 };
-  const initialView = { xMin: -1, xMax: 1, yMin: -1.6, yMax: 1.6 };
+  // view for pred chart (Desmos-like) — initialized from domain eval range
+  let view = { xMin: -2, xMax: 2, yMin: -1.6, yMax: 1.6 };
+  let initialView = { xMin: -2, xMax: 2, yMin: -1.6, yMax: 1.6 };
+  function syncViewToDomain() {
+    try {
+      const d = (typeof Store !== 'undefined' && Store.get('domain')) || { evalMin: -2, evalMax: 2 };
+      initialView = { xMin: d.evalMin, xMax: d.evalMax, yMin: -1.6, yMax: 1.6 };
+      // if view is still at previous initial, snap to new
+      if (view.xMin === -1 && view.xMax === 1 && d.evalMin !== -1) { /* keep zoom if user zoomed */ }
+      // on domain change, reset to new eval range if not zoomed
+      const isAtInitial = Math.abs(view.xMax - view.xMin - (initialView.xMax - initialView.xMin)) < 1e-6;
+      if (isAtInitial) view = { ...initialView };
+    } catch (_) {}
+  }
   let interactBound = false;
 
   function cssVar(name, fallback) {
@@ -19,6 +30,7 @@ const Charts = (() => {
     if (lossChart) { try { lossChart.destroy(); } catch (_) {} lossChart = null; }
     // keep view across theme toggles if already zoomed; otherwise reset
     // (if view is still initial, keep it; else keep current)
+    syncViewToDomain();
     const isDark = document.documentElement.dataset.theme === 'dark';
     const accent = cssVar('--accent', '#2563eb');
     const text = cssVar('--text', isDark ? '#e8e6e1' : '#1c1c1a');
@@ -26,6 +38,40 @@ const Charts = (() => {
     const border = cssVar('--border', '#d8d8d2');
     const gridCol = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
 
+    const evalLabel = `x  \u2208  [${initialView.xMin}, ${initialView.xMax}]`;
+    const trainShadePlugin = {
+      id: 'trainShade',
+      beforeDraw(chart) {
+        try {
+          const dom = (typeof Store !== 'undefined' && Store.get('domain')) || null;
+          if (!dom) return;
+          const { ctx, chartArea, scales } = chart;
+          if (!chartArea) return;
+          const xScale = scales.x;
+          const left = xScale.getPixelForValue(dom.trainMin);
+          const right = xScale.getPixelForValue(dom.trainMax);
+          ctx.save();
+          ctx.fillStyle = isDark ? 'rgba(122,162,247,0.10)' : 'rgba(37,99,235,0.07)';
+          const l = Math.max(chartArea.left, Math.min(left, right));
+          const r = Math.min(chartArea.right, Math.max(left, right));
+          if (r > l) ctx.fillRect(l, chartArea.top, r - l, chartArea.bottom - chartArea.top);
+          ctx.strokeStyle = isDark ? 'rgba(122,162,247,0.22)' : 'rgba(37,99,235,0.22)';
+          ctx.setLineDash([4,3]);
+          ctx.beginPath();
+          if (left >= chartArea.left && left <= chartArea.right) { ctx.moveTo(left, chartArea.top); ctx.lineTo(left, chartArea.bottom); }
+          if (right >= chartArea.left && right <= chartArea.right) { ctx.moveTo(right, chartArea.top); ctx.lineTo(right, chartArea.bottom); }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (r > l) {
+            ctx.fillStyle = muted;
+            ctx.font = '10px system-ui';
+            ctx.textAlign = 'center';
+            ctx.fillText('train', (l+r)/2, chartArea.top + 12);
+          }
+          ctx.restore();
+        } catch (_) {}
+      }
+    };
     predChart = new Chart(canvasPred.getContext('2d'), {
       type: 'line',
       data: {
@@ -46,10 +92,11 @@ const Charts = (() => {
           },
         },
         scales: {
-          x: { type: 'linear', title: { display: true, text: 'x  ∈  [-1, 1]', color: muted, font: { size: 10 } }, grid: { color: gridCol }, ticks: { color: muted, maxTicksLimit: 9 }, min: view.xMin, max: view.xMax },
+          x: { type: 'linear', title: { display: true, text: evalLabel, color: muted, font: { size: 10 } }, grid: { color: gridCol }, ticks: { color: muted, maxTicksLimit: 9 }, min: view.xMin, max: view.xMax },
           y: { title: { display: true, text: 'f(x)', color: muted, font: { size: 10 } }, grid: { color: gridCol }, ticks: { color: muted }, min: view.yMin, max: view.yMax },
         },
       },
+      plugins: [trainShadePlugin],
     });
 
     lossChart = new Chart(canvasLoss.getContext('2d'), {
@@ -126,7 +173,14 @@ const Charts = (() => {
   }
 
   function resetZoom() {
+    syncViewToDomain();
     view = { ...initialView };
+    applyView();
+  }
+  function setDomainAndReset(trainMin, trainMax, evalMin, evalMax) {
+    // called when domain changes — update view to new eval range
+    view = { xMin: evalMin, xMax: evalMax, yMin: -1.6, yMax: 1.6 };
+    initialView = { ...view };
     applyView();
   }
 
@@ -238,5 +292,5 @@ const Charts = (() => {
     canvas.addEventListener('touchend', () => { if (event.touches && event.touches.length < 2) lastPinchDist = null; });
   }
 
-  return { init, setPrediction, setLoss, resize, destroy, zoomIn, zoomOut, resetZoom };
+  return { init, setPrediction, setLoss, resize, destroy, zoomIn, zoomOut, resetZoom, setDomainAndReset, getView: () => ({...view}) };
 })();
