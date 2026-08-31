@@ -16,10 +16,24 @@
   })();
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232563eb'/%3E%3Cpath d='M6 22 Q10 10 16 14 T26 10' stroke='white' stroke-width='2.8' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/graph.css">
+<link rel="stylesheet" href="css/equation.css">
+<link rel="stylesheet" href="css/modal.css">
+<link rel="stylesheet" href="css/toast.css">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="app">
+
+  <div class="hero-landing">
+    <div class="hero-badges"><span class="badge live">● Live</span><span class="badge">No install</span><span class="badge">60fps</span><span class="badge">Share via URL</span></div>
+    <h2>Desmos, but the <span>curve learns</span></h2>
+    <p>Type any equation. Watch a tiny neural network — <b>Fourier, Chebyshev, SIREN, GELU</b> — learn it live, in your browser. No Python, no server, just math.</p>
+  </div>
 
   <header class="top">
     <h1>NN <span>·</span> Desmos</h1>
@@ -75,6 +89,8 @@
     <button id="btnResetWeights" type="button">↺ Reset</button>
     <button id="btnExport" type="button" title="Download weights &amp; biases as JSON">⤓ JSON</button>
     <button id="btnExportPNG" type="button" title="Download graph as PNG">🖼 PNG</button>
+    <button id="btnShare" type="button" title="Copy shareable link">🔗 Share</button>
+    <button id="btnCode" type="button" title="Show PyTorch code">🐍 Code</button>
   </div>
 
   <!-- Loss — secondary, smaller -->
@@ -86,7 +102,27 @@
     <div class="chartbox sm"><canvas id="lossChart"></canvas></div>
   </div>
 
-  <p class="foot">No install. Training runs in TensorFlow.js on your device. <a href="https://github.com/porkfrnd/NN-desmos">GitHub</a></p>
+    <div class="features-grid">
+    <div class="feature-card"><h4>🧩 Embeddings</h4><p>Fourier for periodic, Chebyshev for polynomials. <code>x³</code> finally fits without wiggles.</p></div>
+    <div class="feature-card"><h4>🎛 Tuning Presets</h4><p>One click: <b>Smooth</b> (GELU), <b>Periodic</b> (SIREN+Fourier), <b>Step</b> (deep ReLU).</p></div>
+    <div class="feature-card"><h4>🔍 Extrapolation</h4><p>Train on <code>[-1,1]</code>, test on <code>[-2,2]</code>. Shaded train region, zoom to probe.</p></div>
+  </div>
+
+  </div>
+
+  <div class="gallery">
+    <h3>Gallery — try these</h3>
+    <div class="gallery-grid">
+      <button class="gallery-card" data-eq="sin(3*pi*x) * exp(-0.5*x)"><b>Wave Packet</b><small>sin(3πx)·e^{-0.5x}</small></button>
+      <button class="gallery-card" data-eq="x^3 - 2*x"><b>Cubic</b><small>x³−2x</small></button>
+      <button class="gallery-card" data-eq="abs(x)"><b>Absolute</b><small>|x|</small></button>
+      <button class="gallery-card" data-eq="tanh(5*x)"><b>Smooth Step</b><small>tanh(5x)</small></button>
+      <button class="gallery-card" data-eq="sin(8*pi*x) * 0.5 + cos(2*pi*x)"><b>Chord</b><small>0.5·sin(8πx)+cos(2πx)</small></button>
+      <button class="gallery-card" data-eq="exp(-10*(x-0.3)^2)"><b>Gaussian</b><small>e^{-10(x-0.3)²}</small></button>
+    </div>
+  </div>
+
+  <p class="foot">No install. Training runs in TensorFlow.js on your device. <a href="https://github.com/porkfrnd/NN-desmos">GitHub</a> · <a href="#" onclick="document.getElementById('settingsToggle').click(); return false;">Settings</a> · Shortcuts: <code>Space</code> <code>R</code> <code>,</code> · <a href="#" id="openCodeLink">View PyTorch code</a></p>
 
 </div>
 
@@ -219,6 +255,20 @@
           <input type="range" id="maxEpochs" min="100" max="2000" step="100" value="500">
           <b class="val mono" id="maxEpochsVal">500</b>
         </span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="codeModal" class="settings-modal" hidden>
+  <div class="settings-backdrop" id="codeBackdrop"></div>
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-label="PyTorch code" style="max-width: 640px;">
+    <header><h3>PyTorch code — current model</h3><button id="codeClose" type="button">✕</button></header>
+    <div style="padding: 12px 14px;">
+      <pre id="codeOutput" style="background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; overflow: auto; font: 12px ui-monospace, monospace; white-space: pre; max-height: 60vh;"></pre>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button id="codeCopy" type="button" class="primary">Copy</button>
+        <button id="codeClose2" type="button">Close</button>
       </div>
     </div>
   </div>

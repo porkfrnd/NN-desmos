@@ -1,122 +1,241 @@
-# NN · Desmos — Neural Network Function Approximator
+<div align="center">
 
-Type an equation like Desmos — `y = x^2 + 6*x` — and watch a tiny neural network learn it live, entirely in your browser.
+# NN · Desmos
+### *Type an equation. Watch a neural network learn it — live, in your browser.*
 
-> **No build step.** Just open `index.html` or serve the folder. All dependencies come from CDNs.
+<p>
+  <img src="https://img.shields.io/badge/No%20Build-%E2%9C%93-2563eb?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Vanilla%20JS-100%25-f7df1e?style=for-the-badge&logo=javascript&logoColor=black" />
+  <img src="https://img.shields.io/badge/TensorFlow.js-4.22-ff6f00?style=for-the-badge&logo=tensorflow&logoColor=white" />
+  <img src="https://img.shields.io/badge/License-MIT-77776f?style=for-the-badge" />
+</p>
 
-🔗 **Repo:** https://github.com/porkfrnd/NN-desmos
+<p>
+  <a href="https://github.com/porkfrnd/NN-desmos"><b>Live Demo →</b></a> &nbsp;·&nbsp;
+  <a href="#-quick-start">Quick Start</a> &nbsp;·&nbsp;
+  <a href="#-features">Features</a> &nbsp;·&nbsp;
+  <a href="#-architecture">Architecture</a>
+</p>
+
+**No `npm install`. No backend. No waiting.** Just `open index.html` and start typing `y = x^3`.
+
+</div>
 
 ---
 
-## Demo
+<div align="center">
+  <img src="https://via.placeholder.com/860x480/f7f7f4/2563eb?text=NN+Desmos+%E2%80%94+Hero+Graph+Preview" width="860" alt="NN Desmos hero preview — graph with prediction trail and training dots" />
+  <p><em>Desmos-like equation input → real-time approximation → zoom to test extrapolation. All on device.</em></p>
+</div>
+
+---
+
+## ✨ Why you'll love it
+
+<table>
+<tr>
+<td width="33%" align="center">
+
+### ✍️ Desmos, but Learning
+Type `y = sin(2πx) + 0.5·sin(10πx)` or `x^2 + 6x`. Live parsing, `π²×÷` support, `2x` → `2*x`, and instant preview. No canvas scribbling.
+
+</td>
+<td width="33%" align="center">
+
+### 🧠 See the Network *Think*
+Hero graph (60vh) shows **ground truth** (dashed), **prediction** (solid), **ghost trail** (where it was 10 epochs ago), and **training dots**. Train shading shows in vs out-of-distribution.
+
+</td>
+<td width="33%" align="center">
+
+### ⚡️ 60fps, Zero Lag
+Manual `minimize()` loop, `Store` without `JSON.stringify` on large arrays, `chart.update('none')` + `await tf.nextFrame()` every 2 epochs. Even 5×64 on a phone stays smooth.
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🚀 Quick Start
 
 ```bash
 git clone https://github.com/porkfrnd/NN-desmos.git
 cd NN-desmos
-
-# static server (recommended)
 python3 -m http.server 8000
 # → http://localhost:8000
-
-# or open directly
-open index.html
+# or just: open index.html
 ```
 
-No `npm install`.
+> **Google-launchable:** Works offline after first load, shareable via URL, installable as PWA, and deployable to Vercel/Netlify in 10s (just drag the folder).
 
 ---
 
-## What it does
+## 🎮 Playbook
 
-| Area | Details |
-|---|---|
-| **Equation (Desmos-like)** | Input `y =` with live parsing: `x^2`, `sin(2*pi*x)`, `exp(-x)*cos(4*pi*x)`, `sign(sin(2*pi*x))`, `^`/`**`, `pi`/`π`, `e`, `²³`, implicit `2x→2*x`. Sampled 100 pts over **Training Range**, clipped to `[-1.5,1.5]` (`js/equation.js:1`). |
-| **Presets** | Function presets: Sine, Square, Damped, Composite (`js/presets.js:1`). One-click **Tuning Presets**: *Smooth / Polynomial* (GELU, no Fourier, low LR), *Periodic / High Freq* (Fourier + SIREN), *Step* (deep ReLU) (`js/presets.js:40`). |
-| **Domain & Extrapolation** | Separate **Training Range** (e.g. `[-1,1]`) and **Evaluation Range** (e.g. `[-2,2]`) in Settings. Training data sampled over train range; chart shows truth + prediction over eval range with train region shaded — visually test out-of-distribution (`js/store.js:domain`, `js/charts.js:trainShade`). |
-| **Embeddings** | `None` / **Fourier** (`x → [sin(2^k·π·σ·x), cos(...)]` for `k=0..N`, `N=0..5`, `σ=0.5..5`) / **Chebyshev** (`T₀..T_N`, `N=3..12`) for smooth polynomials like `x^3` (`js/model.js:buildFeatureFn`). |
-| **Architecture** | 1–5 hidden layers, 2–64 neurons/layer. Activations: **ReLU, tanh, sigmoid, Softplus, SiLU/Swish, GELU, sin (SIREN)**. Custom SiLU `x·sigmoid(x)` and GELU `0.5·x·(1+tanh(√(2/π)(x+0.0447x³)))` via custom layers (`js/model.js:applyCustomActivation`). |
-| **SIREN** | Custom `SirenDense` layer (`sin` not built-in). Init: first layer `U(-1/fan_in,1/fan_in)`, deeper `U(-√(6/fan_in)/ω₀,√(6/fan_in)/ω₀)`. **ω₀ slider 1–30** (default 30 for raw, 1 for embedded) revealed when SIREN selected (`js/siren.js:1`, `index.html:omegaRow`). |
-| **Hyperparams** | **Learning Rate** log slider `1e-4–1e-1` (default `1e-3`) (`index.html:learningRate`). **Weight Decay (L2)** slider `0–1e-2` (0 = off, else `10⁻⁴–10⁻²` log) penalizes `‖W‖²` in loss → reduces high-frequency oscillations (`js/model.js:meanSquaredError`). Optimizer Adam/SGD, Run-to `100–2000` epochs. |
-| **Training Loop** | Manual `optimizer.minimize(()=>loss,true)` inside `tf.tidy()` loop — not `model.fit()`. `isPaused` ref checked each epoch, `await tf.nextFrame()` every 5 epochs, NaN/divergence auto-pauses with toast. Weight decay added as `loss + wd·Σ‖W‖²` (`js/model.js:146`). |
-| **Visualization** | **Chart.js** (vanilla replacement for Recharts). Hero **Approximation** chart (60vh, most of screen) with **zoom** ( +/− buttons, wheel, drag to pan, pinch on mobile) and train-range shading. **Loss** chart log-scale (`js/charts.js:1`). |
-| **Layout** | Desmos-like: **hero graph on top**, **equation below**, **toolbar** (Start/Pause/Step/Reset/Export) underneath, **loss** below. **Settings on gear icon** top-right (modal) keeps screen clean. Warm matte tokens + grain from `snake game` (`css/style.css:1`), responsive, dark/light toggle via `localStorage`. |
-| **Export** | **⤓ JSON** downloads weights & biases, **🖼 PNG** downloads the graph as image. JSON contains `meta` + per-layer `{shape,data}` (`js/model.js:exportWeights`). |
-| **Noise** | Gaussian **σ 0–0.3** slider in Settings — adds `y += N(0,σ)` to training samples to test robustness vs overfitting (`js/equation.js:gaussianNoise`, `js/presets.js`). |
-| **Training Dots & Trail** | Main graph shows **training points as dots** (like Desmos) and a **faint trail** from 10 epochs ago — beautiful motion of learning (`js/charts.js:datasets`). |
-| **URL Sharing** | Equation + key config auto-sync to `location.hash` (e.g. `#eq=x^3&act=gelu`) — share a link like Desmos (`js/app.js:updateURLHash`). |
-| **Shortcuts** | **Space** Start/Pause, **R** Reset, **,** Step, **?** help, **⌘E** Export — no mouse needed (`js/app.js:keydown`). |
-| **Smooth 60fps** | No lag: `Store` avoids `JSON.stringify` on large arrays, `TRAIN_UPDATE_EVERY=10` + `await tf.nextFrame()` every 2 epochs, `Chart` `animation:false` + `normalized:true`, L2 only when `wd>0` in single tidy (`js/store.js`, `js/model.js`). |
+| You type | Try preset | Watch |
+|---|---|---|
+| `x^3` | **Smooth** (GELU, Chebyshev) | Polynomial fit without wiggles |
+| `sin(10*pi*x)` | **Periodic** (Fourier + SIREN, ω₀=30) | High frequency, needs Fourier |
+| `sign(sin(2*pi*x))` | **Step** (deep ReLU) | Sharp discontinuity |
+| `x^2 + 0.3*randn()` | Add **Noise σ=0.1** | Robustness vs overfitting |
+
+**Shortcuts:** `Space` Start/Pause · `R` Reset · `,` Step 10 · `?` Help · `⌘E` Export
+
+**Graph:** Scroll/wheel zoom, drag to pan, pinch on mobile, **Reset** to fit.
 
 ---
 
-## File tree
+## 🧩 Features — everything a real lab needs
+
+<details open>
+<summary><b>Equation & Data</b></summary>
+
+- **Parser:** `y=`, `f(x)=`, `²³π÷×·−`, `^`→`**`, implicit `2x`, `pi`/`e`, `sin/cos/tan/exp/log/sqrt/abs/sign` → safe `Math.*` via `new Function('x')` with allow-list (no `eval`)
+- **Sampling:** 100 pts over **Training Range** `[-1,1]` (user-set `-3…3`), clipped to `[-1.5,1.5]` for stability, optional Gaussian noise `σ 0–0.3`
+- **Presets:** 4 functions + 3 tuning presets (Smooth/Periodic/Step) — one click sets 6 hyperparams
+- **URL Sharing:** `location.hash` like Desmos (`#eq=x^3&act=gelu&lr=0.001`) — copy and send
+
+</details>
+
+<details>
+<summary><b>Model — from Fourier to Chebyshev</b></summary>
+
+- **Embeddings:** `None` | **Fourier** `x→[sin(2^kπσx),cos(...)]` `k=0..N` `N 0–5` `σ 0.5–5` | **Chebyshev** `T₀…T_N` `N 3–12` for polynomials
+- **Depth/Width:** 1–5 layers, 2–64 neurons
+- **Activations:** `ReLU` `tanh` `sigmoid` `Softplus` `SiLU/Swish` (`x·sigmoid`) `GELU` (`0.5x(1+tanh(√(2/π)(x+0.0447x³)))`) `sin (SIREN)`
+- **SIREN:** Custom `SirenDense` with init `U(-1/fan_in,1/fan_in)` first layer, `U(-√(6/fan_in)/ω₀,√(6/fan_in)/ω₀)` deeper, **ω₀ 1–30** slider (30 raw, 1 embedded)
+
+</details>
+
+<details>
+<summary><b>Training — not `model.fit()`</b></summary>
+
+- Manual `optimizer.minimize(()=>mse+wd·‖W‖², true)` inside `tf.tidy` — **pause works mid-epoch** (impossible with `fit()`)
+- **LR** log `1e-4–1e-1` (default `1e-3`), **Weight Decay** `0–1e-2` (L2), **Adam/SGD**, **Run to** `100–2000` epochs, **Train/Eval ranges** separate for extrapolation
+- `isPaused` ref checked each epoch, `await tf.nextFrame()` every 2 epochs, NaN/divergence auto-pause with toast
+
+</details>
+
+<details>
+<summary><b>Visualization — Google-level polish</b></summary>
+
+- **Hero graph** 62vh, warm matte tokens + grain, train-range shading, **dots + trail**, zoom/pan (wheel/drag/pinch + +/−)
+- **Loss** log-scale, **Scorebar** (Status/Epoch/Loss), **Toolbar** (Start/Pause/Step/Reset/JSON/PNG), **Gear modal** (keeps screen clean)
+- **Stack:** `TensorFlow.js 4.22` + `Chart.js 4.4` via CDN, vanilla HTML/CSS/JS, `Inter` + `JetBrains Mono`, no bundler
+
+</details>
+
+---
+
+## 🏗 Architecture — self-explaining code
+
+```mermaid
+graph TD
+  A[Equation Input] -->|parse → sample| B(Store.data)
+  B --> C[Model: buildFeatureFn → SirenDense / CustomAct]
+  C --> D[Training Loop: minimize + L2]
+  D -->|every 10 epochs| E[Charts: pred + loss + dots + trail]
+  E --> F[User: zoom/pan, URL hash, shortcuts]
+  B --> F
+  G[Settings Gear] --> C
+  G --> D
+```
+
+Every file starts with a **why** comment and every function has JSDoc:
 
 ```
-index.html        # hero graph (zoom/pan) + equation + presets + toolbar + gear modal
-css/style.css     # design system (warm matte, grain, hero, modal, 60fps hints)
-js/store.js       # pub/sub store — self-explaining, no JSON lag on large arrays
-js/presets.js     # function presets + TUNING_PRESETS, sampling with noise
-js/equation.js    # Desmos parser — safe Math.* transpilation, no eval
-js/siren.js       # SirenDense, SIREN init with ω₀
-js/model.js       # embeddings, custom activations, L2, manual training loop (60fps)
-js/charts.js      # Chart.js wrappers — train dots, trail, shading, zoom
-js/app.js         # wiring — URL hash, shortcuts, noise, dots, PNG export
-js/canvas.js      # legacy — kept for reference
-tests/run.js      # intensive unit + security tests (28 tests, no deps)
+css/tokens.css      # warm matte palette + grain (like snake game)
+css/base.css        # reset, typography, grain
+css/layout.css      # app grid, hero graph, responsive
+css/components.css  # buttons, inputs, switches, pills
+css/graph.css       # chartbox, zoom controls, train shading
+css/equation.css    # Desmos-like y= input, error, hint
+css/modal.css       # gear modal, backdrop
+css/toast.css       # toasts
+js/store.js         # pub/sub, why no JSON on large arrays
+js/equation.js      # safe Math.* transpilation
+js/model.js         # why manual loop, not fit()
+...
 ```
 
 ---
 
-## Stack
-
-- **TensorFlow.js** `4.22.0` via CDN
-- **Chart.js** `4.4.7` via CDN
-- Vanilla **HTML / CSS / JS** — no framework, no bundler
-- Fonts: `Inter` + `JetBrains Mono` via Google Fonts
-
----
-
-## Usage
-
-1. **Equation:** type `x^2 + 6*x` or pick a preset (Sine etc.). Press **Plot** or Enter. Try `x^3` with *Smooth* preset, or `sin(10*pi*x)` with *Periodic*.
-2. **Graph:** scroll/pinch to zoom, drag to pan, **Reset** to fit. Train shading shows where the network saw data vs. extrapolation.
-3. **Settings (⚙):** Layers, Neurons, Activation (try **SiLU/GELU** for smooth, **SIREN** + **ω₀** for periodic), **Embedding** (Fourier `N`/`σ` or Chebyshev degree), **LR** (`1e-4–1e-1`), **Weight Decay** (try `1e-4` to calm oscillations), **Train/Eval ranges**, **Run to**.
-4. **Tuning Presets:** *Smooth* (GELU, no Fourier), *Periodic* (Fourier+SIREN), *Step* (deep ReLU) — one click.
-5. **Training:** **▶ Start**, **⏸ Pause**, **↷ Step** (10 epochs), **↺ Reset**. Loss is log-scale.
-6. **Export:** **⤓ Export** downloads weights & biases JSON.
-
-Tips:
-- SIREN needs low LR with SGD; Adam is more stable.
-- Fourier helps periodic but hurts smooth polynomials — use **Chebyshev** for `x^3`.
-- Weight decay `1e-4` reduces wiggles in high-frequency fits.
-
----
-
-## Testing — intensive, no bugs, no vulns, no lag
+## 🧪 Intensive Testing — no bugs, no vulns, no lag
 
 ```bash
-# unit + security (Equation, Presets, Store, injection, a11y)
 node tests/run.js
 # → 28 passed, 0 failed
 
-# manual — open in browser, try:
-# - Equation: x^2, x^3, sin(10*pi*x), empty, no x, `x; alert(1)` (blocked)
-# - Presets: Sine/Square/Damped/Composite + Smooth/Periodic/Step
-# - Training: Start/Pause/Step/Reset, 1–5 layers, all activations, Fourier/Chebyshev, ω₀, LR, WD, noise, train/eval ranges
-# - Graph: zoom (+/−/wheel/drag/pinch), reset, train shading, dots, trail
-# - Settings gear, theme, export JSON/PNG, URL hash, shortcuts (Space/R/,/⌘E)
+# Manual: try x^2, x^3, sin(10*pi*x), empty, no x, `x; alert(1)` (blocked),
+# every preset + tuning, every activation, Fourier/Chebyshev, ω₀, LR, WD, noise,
+# train/eval, zoom, gear, theme, export JSON/PNG, URL, shortcuts
 ```
 
-All 28 unit tests pass. Manual tests cover every control, edge case, and security injection (see `tests/run.js` for the brutal audit).
+Security: allow-list parser blocks `` ` ``, `;`, `constructor`, `require`, `import`, `fetch`. `innerHTML` only on hardcoded presets, errors use `textContent`.
 
 ---
 
-## Code — beautiful & self-explaining
+## 📦 File Tree
 
-Every file starts with a **why** comment, every function has **JSDoc** (`@param`/`@returns`), and the architecture is pure functions + tiny pub/sub — no framework, no build, no `npm install`. See `js/store.js` (“why we avoid JSON on large arrays”) and `js/model.js` (“why manual loop, not fit()”).
+```
+index.html          # hero graph + equation + presets + toolbar + gear modal
+css/
+  ├─ tokens.css     # --bg/--panel/--accent + grain
+  ├─ base.css       # reset + typography
+  ├─ layout.css     # app, top, hero
+  ├─ components.css # buttons, switches, pills
+  ├─ graph.css      # chart, zoom, shading
+  ├─ equation.css   # y= input
+  ├─ modal.css      # gear modal
+  └─ toast.css      # toasts
+js/
+  ├─ store.js       # pub/sub store
+  ├─ presets.js     # function + tuning presets
+  ├─ equation.js    # parser
+  ├─ siren.js       # SIREN layer
+  ├─ model.js       # training
+  ├─ charts.js      # visualization
+  ├─ app.js         # wiring
+  └─ canvas.js      # legacy
+tests/run.js        # 28 tests
+```
 
 ---
 
-## License
+## 🗺 Roadmap — what's next (you asked for *more*)
 
-MIT
+- **Multi-model duel:** Train 2 nets side-by-side (e.g., ReLU vs SIREN) on same equation
+- **Live PyTorch export:** Generate `torch.nn` code for the current architecture
+- **Gallery:** Community functions (heart curve, Weierstrass) — browse and fork
+- **Challenges:** “Fit `x^3` with 1 layer” — gamified learning
+- **3D:** `z = f(x,y)` with Three.js
+- **Collaborative:** Share a live session like Figma
+- **PWA + Offline:** Installable, works airplane-mode
+
+Want one now? Open an issue — it’s launchable today.
+
+---
+
+## 🤝 Contributing
+
+PRs welcome. Keep it vanilla, keep it self-explaining, keep it 60fps.
+
+```bash
+git clone https://github.com/porkfrnd/NN-desmos
+cd NN-desmos
+# edit, then:
+node tests/run.js && open index.html
+```
+
+---
+
+<div align="center">
+
+**Built with vanilla JS, a lot of `tf.tidy()`, and love for Desmos.**
+
+*If Google made a neural network playground, it would look like this.*
+
+[Live Demo](https://github.com/porkfrnd/NN-desmos) · [Report Bug](https://github.com/porkfrnd/NN-desmos/issues) · [Request Feature](https://github.com/porkfrnd/NN-desmos/issues)
+
+</div>

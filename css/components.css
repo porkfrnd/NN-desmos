@@ -1,0 +1,73 @@
+/* components.css — buttons, inputs, switches, tabs */
+button {
+  font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 9px 14px; cursor: pointer; min-height: 40px;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, border-color 0.15s, transform 0.08s, box-shadow 0.15s;
+}
+button:hover:not(:disabled) { background: color-mix(in srgb, var(--border) 35%, var(--panel)); }
+button:active:not(:disabled) { transform: translateY(1px) scale(0.99); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); box-shadow: var(--shadow-sm); }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow-md); }
+select {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 7px 10px; font: inherit; min-height: 40px;
+}
+input[type="range"] {
+  accent-color: var(--accent); width: 140px; max-width: 38vw;
+  height: 24px; vertical-align: middle;
+}
+.switch {
+  display: inline-flex; align-items: center;
+  width: 42px; height: 24px; min-height: 24px;
+  border-radius: 999px; background: var(--border);
+  border: 1px solid var(--border-strong);
+  cursor: pointer; transition: background 0.15s, box-shadow 0.15s; padding: 0;
+}
+.switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.switch .knob {
+  width: 16px; height: 16px; margin: 2px; border-radius: 50%;
+  background: var(--panel); transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.switch[aria-checked="true"] .knob { transform: translateX(18px); }
+.switch.active { background: var(--accent); border-color: var(--accent); }
+.switch.active .knob { transform: translateX(18px); }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tabs .preset-btn {
+  border: 1px solid transparent; background: transparent;
+  padding: 7px 12px; border-radius: var(--radius);
+  color: var(--muted); font-size: 13px; text-align: left;
+  min-height: 40px; line-height: 1.2; transition: all 0.15s;
+}
+.tabs .preset-btn:hover { background: var(--panel); border-color: var(--border); color: var(--text); transform: translateY(-1px); }
+.tabs .preset-btn.active { color: var(--text); border-color: var(--border-strong); background: var(--panel); box-shadow: var(--shadow-sm); }
+.preset-btn .preset-name { font-weight: 600; display: block; }
+.preset-btn .preset-formula { font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 11px; opacity: 0.75; }
+.tuning-row { flex-wrap: wrap; }
+.tuning-presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.preset-chip {
+  padding: 6px 10px; font-size: 12px; font-weight: 600;
+  border-radius: 999px; background: var(--bg); border: 1px solid var(--border);
+  transition: all 0.15s;
+}
+.preset-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+.domain-control { gap: 6px; }
+.domain-control input[type="number"] {
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 6px 8px; font: 13px ui-monospace, monospace; text-align: center;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.domain-control input[type="number"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.toolbar { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.toolbar button { flex: 1 1 0; min-width: 72px; transition: all 0.15s; }
+.toolbar button:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+@media (max-width: 640px) {
+  .toolbar button { padding: 10px 8px; font-size: 14px; }
+  .tabs .preset-btn { flex: 1 1 44%; }
+  select, input[type="range"] { font-size: 16px; }
+}

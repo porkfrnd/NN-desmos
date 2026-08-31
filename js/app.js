@@ -44,6 +44,8 @@ const App = {
     this.setupHyperparams();
     this.setupDomain();
     this.setupControls();
+    this.setupGallery();
+    this.setupShareAndCode();
     this.setupStatus();
     this.bindDataSubscriptions();
     // sync UI from store after all setups
@@ -580,6 +582,88 @@ const App = {
       a.click();
       this.showToast('Graph PNG downloaded ✓', 'success');
     } catch (e) { this.showToast('PNG export failed: ' + e.message, 'error'); }
+  },
+
+  // self-explaining: gallery, share, and code are the delightful extras that make it feel like a product
+  setupGallery() {
+    $all('.gallery-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const eq = card.dataset.eq;
+        if (!eq) return;
+        const input = document.getElementById('equationInput');
+        if (input) input.value = eq;
+        try { this.applyEquation(eq, null); } catch (e) { this.showToast(e.message, 'error'); }
+      });
+    });
+  },
+
+  setupShareAndCode() {
+    const shareBtn = document.getElementById('btnShare');
+    if (shareBtn) shareBtn.addEventListener('click', async () => {
+      try {
+        this.updateURLHash();
+        const url = location.href;
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(url);
+        else { const ta = document.createElement('textarea'); ta.value = url; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+        this.showToast('Link copied ✓', 'success');
+      } catch (e) { this.showToast('Copy failed: ' + e.message, 'error'); }
+    });
+    const codeBtn = document.getElementById('btnCode');
+    const openLink = document.getElementById('openCodeLink');
+    const modal = document.getElementById('codeModal');
+    const backdrop = document.getElementById('codeBackdrop');
+    const closeBtn = document.getElementById('codeClose');
+    const closeBtn2 = document.getElementById('codeClose2');
+    const copyBtn = document.getElementById('codeCopy');
+    const output = document.getElementById('codeOutput');
+    const genCode = () => {
+      const m = Store.get('model');
+      const tr = Store.get('training');
+      const d = Store.get('data');
+      const actMap = { relu: 'ReLU', tanh: 'Tanh', sigmoid: 'Sigmoid', softplus: 'Softplus', silu: 'SiLU', gelu: 'GELU', sine: 'Sin' };
+      const act = actMap[m.activation] || m.activation;
+      const emb = m.embedding === 'fourier' ? `Fourier(N=${m.fourierN}, sigma=${m.fourierSigma})` : m.embedding === 'chebyshev' ? `Chebyshev(deg=${m.chebyshevDegree})` : 'None';
+      return `# PyTorch — copy the architecture, train on your equation
+import torch, torch.nn as nn
+
+# equation: y = ${d.equation || 'sin(2*pi*x)'}
+# domain: train [${Store.get('domain').trainMin}, ${Store.get('domain').trainMax}]  eval [${Store.get('domain').evalMin}, ${Store.get('domain').evalMax}]
+# embedding: ${emb}  →  input dim = ${m.embedding === 'fourier' ? 2*(m.fourierN+1) : m.embedding === 'chebyshev' ? m.chebyshevDegree+1 : 1}
+
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+${Array.from({length: m.hiddenLayers}, (_,i) => `            nn.Linear(${i===0 ? (m.embedding==='fourier'?2*(m.fourierN+1):m.embedding==='chebyshev'?m.chebyshevDegree+1:1) : m.neuronsPerLayer}, ${m.neuronsPerLayer}),
+            nn.${act}(),`).join('\n')}
+            nn.Linear(${m.neuronsPerLayer}, 1)
+        )
+        # SIREN ω₀=${m.omega0}  |  L2 wd=${tr.weightDecay}  |  noise σ=${tr.noise}
+    def forward(self, x):
+        # apply ${m.embedding} embedding here if needed, then self.net(x)
+        return self.net(x)
+
+# training
+# opt = torch.optim.${tr.optimizer === 'adam' ? 'Adam' : 'SGD'}(net.parameters(), lr=${tr.learningRate}, weight_decay=${tr.weightDecay})
+# loss = nn.MSELoss()
+`;
+    };
+    const open = () => {
+      if (!modal || !output) return;
+      output.textContent = genCode();
+      modal.hidden = false;
+      document.body.style.overflow = 'hidden';
+    };
+    const close = () => { if (modal) modal.hidden = true; document.body.style.overflow = ''; };
+    if (codeBtn) codeBtn.addEventListener('click', open);
+    if (openLink) openLink.addEventListener('click', (e) => { e.preventDefault(); open(); });
+    if (backdrop) backdrop.addEventListener('click', close);
+    if (closeBtn) closeBtn.addEventListener('click', close);
+    if (closeBtn2) closeBtn2.addEventListener('click', close);
+    if (copyBtn) copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(output.textContent); this.showToast('Code copied ✓', 'success'); } catch (e) { this.showToast('Copy failed', 'error'); }
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && modal && !modal.hidden) close(); });
   },
 
   handleRunEnd(status) {

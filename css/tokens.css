@@ -1,0 +1,45 @@
+/* tokens.css — design system, warm matte, like snake game + Google Material 3 */
+:root {
+  --bg: #f7f7f4;
+  --panel: #ffffff;
+  --border: #d8d8d2;
+  --border-strong: #b9b9b2;
+  --text: #1c1c1a;
+  --muted: #77776f;
+  --accent: #2563eb;
+  --accent-soft: #e8effd;
+  --accent-contrast: #ffffff;
+  --danger: #b91c1c;
+  --ok: #15803d;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --board-bg: #ecece7;
+  --grid-line: #e9e9e4;
+  --board-border: #d8d8d2;
+  --graph-line: #2563eb;
+  --graph-avg: #9ca3af;
+  --grain-opacity: 0.05;
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,0.18);
+}
+
+[data-theme="dark"] {
+  --bg: #161615;
+  --panel: #201f1e;
+  --border: #32312e;
+  --border-strong: #45443f;
+  --text: #e8e6e1;
+  --muted: #99978e;
+  --accent: #7aa2f7;
+  --accent-soft: #262c3c;
+  --accent-contrast: #161615;
+  --danger: #f87171;
+  --ok: #4ade80;
+  --board-bg: #1b1b1a;
+  --grid-line: #262625;
+  --board-border: #33322f;
+  --graph-line: #7aa2f7;
+  --graph-avg: #6b6963;
+  --grain-opacity: 0.07;
+}
