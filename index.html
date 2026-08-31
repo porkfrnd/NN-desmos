@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>NN Desmos — Function Approximator</title>
-<meta name="description" content="Train a neural network in your browser to approximate any 1D function. Vanilla JS + TensorFlow.js, no build step.">
+<meta name="description" content="Type an equation like Desmos and watch a neural network learn it live — all in your browser.">
 <script>
   (function () {
     try {
@@ -23,55 +23,61 @@
 
   <header class="top">
     <h1>NN <span>·</span> Desmos</h1>
-    <button id="themeToggle" type="button" aria-label="Toggle theme">Dark</button>
+    <div class="top-actions">
+      <button id="themeToggle" type="button" aria-label="Toggle theme">Dark</button>
+      <button id="settingsToggle" type="button" aria-label="Settings" title="Settings">⚙</button>
+    </div>
   </header>
 
-  <p class="lede">Type an equation like <code>y = x^2 + 6*x</code> — like Desmos — and watch a tiny network learn it live.</p>
+  <!-- Graph — hero, most of the screen like Desmos -->
+  <div class="graphwrap hero" id="graphHero">
+    <header>
+      <h3>Graph</h3>
+      <span class="legend"><i class="swatch gt"></i> truth &nbsp; <i class="swatch pr"></i> prediction</span>
+    </header>
+    <div class="chartbox hero-box">
+      <canvas id="predChart" aria-label="Approximation graph"></canvas>
+      <div class="zoom-controls" aria-label="Zoom controls">
+        <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+        <button type="button" id="zoomOut" aria-label="Zoom out">−</button>
+        <button type="button" id="zoomReset" aria-label="Reset zoom">Reset</button>
+      </div>
+    </div>
+    <div class="scorebar" role="status" aria-live="polite">
+      <span class="item">Status <b id="statusLabel">Idle</b> <i id="statusDot" class="dot" aria-hidden="true"></i></span>
+      <span class="item">Epoch <b id="epochVal">0</b></span>
+      <span class="item">Loss <b id="lossVal">—</b></span>
+    </div>
+  </div>
 
-  <!-- Target presets -->
-  <nav class="tabs" id="presetGrid" aria-label="Target presets"></nav>
-
-  <!-- Equation — Desmos-style -->
+  <!-- Equation — below the graph like Desmos expression list -->
   <div class="eq-card">
-    <label class="eq-label" for="equationInput">Equation</label>
     <div class="eq-row">
       <span class="eq-prefix">y =</span>
       <input id="equationInput" type="text" spellcheck="false" autocomplete="off"
-             placeholder="x^2 + 6*x  or  sin(2*pi*x) + 0.5*sin(10*pi*x)"
+             placeholder="x^2 + 6*x  or  sin(2*pi*x)"
              aria-label="Equation, in x">
       <button id="equationApply" class="primary" type="button">Plot</button>
     </div>
     <div id="equationError" class="eq-error" role="alert" hidden></div>
-    <p class="eq-hint">x ∈ [-1, 1], y clipped to [-1.5, 1.5] for training. Try <code>sin</code>, <code>cos</code>, <code>exp</code>, <code>sqrt</code>, <code>abs</code>, <code>sign</code>, <code>^</code>, <code>pi</code>, <code>e</code>. Press Enter to plot.</p>
+    <div class="eq-presets">
+      <span class="eq-presets-label">Try:</span>
+      <nav class="tabs compact" id="presetGrid" aria-label="Presets"></nav>
+    </div>
+    <p class="eq-hint">x ∈ [-1, 1] · y clipped to [-1.5, 1.5]. Functions: <code>sin</code> <code>cos</code> <code>exp</code> <code>sqrt</code> <code>abs</code> <code>sign</code> <code>^</code> <code>pi</code> <code>e</code> · scroll or pinch to zoom, drag to pan.</p>
   </div>
 
-  <!-- Status -->
-  <div class="scorebar" role="status" aria-live="polite">
-    <span class="item">Status <b id="statusLabel">Idle</b> <i id="statusDot" class="dot" aria-hidden="true"></i></span>
-    <span class="item">Epoch <b id="epochVal">0</b></span>
-    <span class="item">Loss <b id="lossVal">—</b></span>
-  </div>
-
-  <!-- Toolbar -->
+  <!-- Controls — directly under equation like Desmos playback -->
   <div class="toolbar">
     <button class="primary" id="btnStart" type="button">▶ Start</button>
     <button id="btnPause" type="button">⏸ Pause</button>
-    <button id="btnStep" type="button">↷ Step 10</button>
+    <button id="btnStep" type="button">↷ Step</button>
     <button id="btnResetWeights" type="button">↺ Reset</button>
-    <button id="btnExport" type="button" title="Download weights &amp; biases as JSON">⤓ Export</button>
+    <button id="btnExport" type="button" title="Download weights & biases as JSON">⤓ Export</button>
   </div>
 
-  <!-- Approximation -->
-  <div class="graphwrap">
-    <header>
-      <h3>Approximation</h3>
-      <span class="legend"><i class="swatch gt"></i> truth &nbsp; <i class="swatch pr"></i> prediction</span>
-    </header>
-    <div class="chartbox"><canvas id="predChart"></canvas></div>
-  </div>
-
-  <!-- Loss -->
-  <div class="graphwrap">
+  <!-- Loss — secondary, smaller -->
+  <div class="graphwrap" id="lossWrap">
     <header>
       <h3>Training loss</h3>
       <span class="hint">log scale</span>
@@ -79,11 +85,19 @@
     <div class="chartbox sm"><canvas id="lossChart"></canvas></div>
   </div>
 
-  <!-- Settings — collapsed by default on phones, open on desktop -->
-  <details class="settings" open>
-    <summary>Settings</summary>
-    <div class="rows">
+  <p class="foot">No install. Training runs in TensorFlow.js on your device. <a href="https://github.com/porkfrnd/NN-desmos">GitHub</a></p>
 
+</div>
+
+<!-- Settings modal — gear icon, like Desmos settings -->
+<div id="settingsModal" class="settings-modal" hidden>
+  <div class="settings-backdrop" id="settingsBackdrop"></div>
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+    <header>
+      <h3>Settings</h3>
+      <button id="settingsClose" type="button" aria-label="Close">✕</button>
+    </header>
+    <div class="rows">
       <div class="row">
         <div><b>Hidden layers</b><small>1 – 5</small></div>
         <span class="control">
@@ -91,7 +105,6 @@
           <b class="val" id="hiddenLayersVal">3</b>
         </span>
       </div>
-
       <div class="row">
         <div><b>Neurons / layer</b><small>2 – 64</small></div>
         <span class="control">
@@ -99,7 +112,6 @@
           <b class="val" id="neuronsPerLayerVal">16</b>
         </span>
       </div>
-
       <div class="row">
         <div><b>Activation</b></div>
         <select id="activation" aria-label="Activation">
@@ -109,12 +121,10 @@
           <option value="sine">sin — SIREN</option>
         </select>
       </div>
-
       <div class="row">
         <div><b>Fourier features</b><small>sin(2^kπx), cos(2^kπx) for k=0..3</small></div>
         <button class="switch" id="fourierFeatures" role="switch" aria-checked="false" aria-label="Fourier features"><span class="knob"></span></button>
       </div>
-
       <div class="row">
         <div><b>Learning rate</b></div>
         <span class="control">
@@ -122,7 +132,6 @@
           <b class="val mono" id="learningRateVal">1.0e-3</b>
         </span>
       </div>
-
       <div class="row">
         <div><b>Optimizer</b></div>
         <select id="optimizer" aria-label="Optimizer">
@@ -130,7 +139,6 @@
           <option value="sgd">SGD</option>
         </select>
       </div>
-
       <div class="row">
         <div><b>Run to</b><small>epochs per run</small></div>
         <span class="control">
@@ -138,12 +146,8 @@
           <b class="val mono" id="maxEpochsVal">500</b>
         </span>
       </div>
-
     </div>
-  </details>
-
-  <p class="foot">No install. No server. Training runs in TensorFlow.js on your device. <a href="https://github.com/porkfrnd/NN-desmos">GitHub</a></p>
-
+  </div>
 </div>
 
 <div id="toastContainer" class="toasts" aria-live="polite"></div>
@@ -158,7 +162,6 @@
 <script src="js/charts.js"></script>
 <script src="js/app.js"></script>
 <script>
-  // theme toggle — mirrors snake game
   (function () {
     var btn = document.getElementById('themeToggle');
     function apply(t) {
@@ -181,6 +184,18 @@
       apply(cur === 'dark' ? 'light' : 'dark');
     });
     apply(document.documentElement.dataset.theme || 'light');
+
+    // settings gear
+    var gear = document.getElementById('settingsToggle');
+    var modal = document.getElementById('settingsModal');
+    var backdrop = document.getElementById('settingsBackdrop');
+    var closeBtn = document.getElementById('settingsClose');
+    function openSettings(){ modal.hidden = false; document.body.style.overflow='hidden'; }
+    function closeSettings(){ modal.hidden = true; document.body.style.overflow=''; }
+    gear.addEventListener('click', openSettings);
+    closeBtn.addEventListener('click', closeSettings);
+    backdrop.addEventListener('click', closeSettings);
+    document.addEventListener('keydown', function(e){ if(e.key==='Escape' && !modal.hidden) closeSettings(); });
   })();
 </script>
 </body>

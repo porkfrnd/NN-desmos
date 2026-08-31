@@ -108,15 +108,22 @@ input[type="range"] {
 
 /* layout */
 html { overscroll-behavior-y: contain; }
-.app { max-width: 720px; margin: 0 auto; padding: 14px 14px 28px; }
+.app { max-width: 860px; margin: 0 auto; padding: 12px 12px 28px; }
 
 .top {
-  display: flex; align-items: baseline; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   gap: 12px; margin-bottom: 10px;
 }
 .top h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
 .top h1 span { color: var(--muted); font-weight: 400; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
 #themeToggle { padding: 6px 12px; font-size: 13px; min-height: 34px; }
+#settingsToggle {
+  width: 34px; height: 34px; min-height: 34px;
+  padding: 0; display: grid; place-items: center;
+  font-size: 16px; line-height: 1;
+  border-radius: 50%;
+}
 
 .lede { color: var(--muted); font-size: 13.5px; margin-bottom: 12px; line-height: 1.4; }
 
@@ -195,6 +202,11 @@ html { overscroll-behavior-y: contain; }
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden;
 }
+.graphwrap.hero {
+  margin-top: 8px;
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+}
 .graphwrap header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px; border-bottom: 1px solid var(--border);
@@ -204,32 +216,61 @@ html { overscroll-behavior-y: contain; }
 .legend .swatch { display: inline-block; width: 12px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 2px; }
 .swatch.gt { background: var(--muted); }
 .swatch.pr { background: var(--accent); }
-.chartbox { padding: 8px; height: 260px; }
+.chartbox { padding: 8px; height: 260px; position: relative; }
 .chartbox.sm { height: 200px; }
+.chartbox.hero-box { height: min(62vh, 560px); min-height: 360px; }
 .chartbox canvas { width: 100% !important; height: 100% !important; }
 
-/* settings — like snake's .settings */
-.settings {
-  margin-top: 12px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--panel);
+/* zoom controls — Desmos-like, top-right of graph */
+.zoom-controls {
+  position: absolute; top: 10px; right: 10px;
+  display: flex; flex-direction: column; gap: 4px;
+  z-index: 2;
 }
-.settings summary {
-  cursor: pointer; padding: 10px 12px;
-  color: var(--muted); font-size: 13.5px; font-weight: 550;
+.zoom-controls button {
+  width: 32px; height: 32px; min-height: 32px;
+  padding: 0; font-size: 16px; font-weight: 600; line-height: 1;
+  border-radius: 6px; background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
 }
-.settings .rows { padding: 4px 12px 10px; }
-.settings .row {
+.zoom-controls button:last-child {
+  height: 26px; font-size: 11px; font-weight: 500; margin-top: 2px;
+}
+
+/* settings modal — gear icon, Desmos-like */
+.settings-modal { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 16px; }
+.settings-modal[hidden] { display: none; }
+.settings-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.32); backdrop-filter: blur(2px); }
+.settings-panel {
+  position: relative; width: min(520px, 100%); max-height: 88vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+}
+.settings-panel header {
+  position: sticky; top: 0; background: var(--panel);
   display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 10px 0;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.settings-panel header h3 { font-size: 14px; font-weight: 700; }
+.settings-panel .rows { padding: 6px 14px 14px; }
+.settings-panel .row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 0;
   border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
-.settings .row:first-child { border-top: 0; }
-.settings .row b { font-size: 13.5px; font-weight: 600; }
-.settings .row small { display: block; color: var(--muted); font-size: 12px; }
-.settings .control { display: inline-flex; align-items: center; gap: 8px; }
-.settings .val { min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
-.settings .val.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.settings-panel .row:first-child { border-top: 0; }
+.settings-panel .row b { font-size: 13.5px; font-weight: 600; }
+.settings-panel .row small { display: block; color: var(--muted); font-size: 12px; }
+.settings-panel .control { display: inline-flex; align-items: center; gap: 8px; }
+.settings-panel .val { min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+.settings-panel .val.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+
+/* equation presets compact */
+.eq-presets { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.eq-presets-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+.tabs.compact { gap: 6px; margin-bottom: 0; }
+.tabs.compact .preset-btn { padding: 5px 10px; min-height: 32px; font-size: 12.5px; }
 
 .foot { margin-top: 14px; color: var(--muted); font-size: 12.5px; text-align: center; }
 .foot a { color: var(--accent); text-decoration: none; }
@@ -257,11 +298,23 @@ html { overscroll-behavior-y: contain; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+.graphwrap.hero .scorebar {
+  margin-top: 0;
+  border-radius: 0;
+  border-left: 0; border-right: 0; border-bottom: 0;
+}
+
 @media (max-width: 640px) {
-  .app { padding: 10px 10px 22px; }
+  .app { padding: 10px 10px 22px; max-width: 100%; }
   .toolbar button { padding: 10px 8px; font-size: 14px; }
   .tabs .preset-btn { flex: 1 1 44%; }
   .chartbox { height: 220px; }
   .chartbox.sm { height: 180px; }
+  .chartbox.hero-box { height: 52vh; min-height: 320px; }
+  .zoom-controls button { width: 30px; height: 30px; }
   select, input[type="range"] { font-size: 16px; }
+}
+@media (max-width: 380px) {
+  .eq-row { flex-wrap: wrap; }
+  #equationInput { min-width: 100%; }
 }
