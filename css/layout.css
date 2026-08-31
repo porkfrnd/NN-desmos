@@ -64,3 +64,16 @@
 .gallery-card b { display: block; font-size: 13px; }
 .gallery-card small { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
 @media (max-width: 640px) { .gallery-grid { grid-template-columns: repeat(2, 1fr); } }
+
+/* gallery as details — more human, less marketing */
+.gallery-details {
+  margin-top: 10px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--panel);
+}
+.gallery-details summary {
+  padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--muted);
+  cursor: pointer; list-style: none;
+}
+.gallery-details summary::-webkit-details-marker { display: none; }
+.gallery-details[open] summary { border-bottom: 1px solid var(--border); }
+.gallery-details .gallery-grid { padding: 8px; }
