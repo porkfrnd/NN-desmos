@@ -32,7 +32,7 @@ const Training = (() => {
   // Fourier features: x -> [sin(2^k π x), cos(2^k π x)] for k=0..3 => 8 feats.
   // When disabled, the raw normalized x ([-1,1]) is the single feature.
   function buildFeatureFn(fourier) {
-    if (!fourier) return (x) => x;
+    if (!fourier) return (x) => [x];
     return (x) => {
       const parts = [];
       for (let k = 0; k < 4; k++) {

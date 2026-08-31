@@ -228,6 +228,7 @@ const App = {
       this.showToast('Draw or select a function first', 'warning');
       return;
     }
+    if (Store.get('run').status === 'training') return;
     if (!Training.modelExists) {
       Training.buildModel();
       Training.setDataTensors();
@@ -277,28 +278,33 @@ const App = {
     }
   },
 
-  // Step exactly 10 epochs regardless of pause state, update once at end.
+  // Step exactly 10 epochs regardless of pause state, updates once at end.
   async runStep() {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) {
       this.showToast('Draw or select a function first', 'warning');
       return;
     }
-    Training.setStopRequested(true); // stop any running loop
+    // stop any continuous run, wait a tick for it to exit, then do 10
+    Training.setStopRequested(true);
+    await new Promise(r => setTimeout(r, 60));
+    Training.setStopRequested(false);
     if (!Training.modelExists) {
       Training.buildModel();
       Training.setDataTensors();
     }
     const wasPaused = Training.isPaused;
+    const wasTraining = Store.get('run').status === 'training';
     Training.setPaused(false);
     this.setStatus('training');
     const status = await Training.runEpochs(10);
-    // Restore pause/status as appropriate.
-    if (status === 'nan' || status === 'diverged' || status === 'stopped') {
-      this.setStatus(wasPaused ? 'paused' : 'idle');
+    if (status === 'nan' || status === 'diverged') {
+      this.handleRunEnd(status);
       return;
     }
-    this.setStatus(wasPaused ? 'paused' : Training.isPaused ? 'paused' : 'idle');
+    // Step always ends paused/idle, never continues the loop
+    Training.setPaused(wasPaused || !wasTraining);
+    this.setStatus(wasPaused || !wasTraining ? 'paused' : 'idle');
   },
 
   handleRunEnd(status) {
