@@ -22,33 +22,49 @@ const CanvasDraw = (() => {
   function init(cv, opts = {}) {
     canvas = cv;
     onData = opts.onData || null;
-    const dpr = window.devicePixelRatio || 1;
-    const rect = cv.getBoundingClientRect();
-    size = Math.floor(Math.min(rect.width, rect.height));
-    cv.width = size * dpr;
-    cv.height = size * dpr;
-    ctx = cv.getContext('2d');
-    ctx.scale(dpr, dpr);
-    // Recompute square CSS size
-    cv.style.width = size + 'px';
-    cv.style.height = size + 'px';
-
+    resizeCanvas();
     cv.addEventListener('pointerdown', onPointerDown);
     cv.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerUp);
+    window.addEventListener('resize', resizeCanvas);
+    // prevent page scroll while drawing on touch
+    cv.style.touchAction = 'none';
+  }
+
+  function resizeCanvas() {
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    // keep canvas square to the smallest side of its container
+    size = Math.floor(Math.min(rect.width, rect.height) || rect.width || 300);
+    if (size < 40) size = Math.floor(rect.width || 300);
+    canvas.width = Math.round(size * dpr);
+    canvas.height = Math.round(size * dpr);
+    const c = canvas.getContext('2d');
+    if (c) {
+      c.setTransform(1, 0, 0, 1, 0, 0);
+      c.scale(dpr, dpr);
+      ctx = c;
+    }
+    canvas.style.width = size + 'px';
+    canvas.style.height = size + 'px';
+    redraw();
   }
 
   function onPointerDown(e) {
+    e.preventDefault();
     drawing = true;
     points = [];
     lastPoint = null;
-    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    try { canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId); } catch (_) {}
     addPoint(e);
+    redraw();
   }
 
   function onPointerMove(e) {
     if (!drawing) return;
+    e.preventDefault();
     addPoint(e);
     redraw();
   }
@@ -56,12 +72,10 @@ const CanvasDraw = (() => {
   function onPointerUp() {
     if (!drawing) return;
     drawing = false;
-    // Finalize: resample to N evenly-spaced-in-x points and emit.
     const sampled = resample(points, DEFAULTS.samples);
     if (onData && sampled.xs.length >= 2) {
       onData(sampled);
     }
-    drawAxes(); // redraw axes (leave stroke visible)
   }
 
   // Convert pointer event to a domain point (y flipped).
@@ -115,13 +129,11 @@ const CanvasDraw = (() => {
   }
 
   function pyOfY(y) {
-    // y maps [-1.5, 1.5] -> bottom-to-top within the canvas, flipping.
     return size * (0.5 - y / 3);
   }
 
-  // Redraw the accumulated stroke.
   function redraw() {
-    if (!ctx) return;
+    if (!ctx || !size) return;
     ctx.clearRect(0, 0, size, size);
     drawBackground();
     drawAxes();
@@ -131,34 +143,41 @@ const CanvasDraw = (() => {
       for (let i = 1; i < points.length; i++) {
         ctx.lineTo(pxOfX(points[i].x), pyOfY(points[i].y));
       }
-      ctx.strokeStyle = 'rgba(108,140,255,0.85)';
-      ctx.lineWidth = 2;
+      const isDark = document.documentElement.dataset.theme !== 'light' && getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() !== '';
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent') || '#2563eb';
+      ctx.lineWidth = 2.2;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
       ctx.stroke();
     }
   }
 
   function drawBackground() {
-    ctx.fillStyle = '#0f1117';
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--board-bg').trim() || '#ecece7';
+    ctx.fillStyle = bg;
     ctx.fillRect(0, 0, size, size);
   }
 
   function drawAxes() {
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    const grid = getComputedStyle(document.documentElement).getPropertyValue('--grid-line').trim() || 'rgba(0,0,0,0.08)';
+    const border = getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#d8d8d2';
+    ctx.strokeStyle = grid;
     ctx.lineWidth = 1;
-    // x=0 line and y=0 line
     ctx.beginPath();
     ctx.moveTo(pxOfX(0), 0); ctx.lineTo(pxOfX(0), size);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(0, pyOfY(0)); ctx.lineTo(size, pyOfY(0));
     ctx.stroke();
-    // Domain borders x=-1 and x=1
+    ctx.strokeStyle = border;
+    ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(pxOfX(-1), 0); ctx.lineTo(pxOfX(-1), size);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(pxOfX(1), 0); ctx.lineTo(pxOfX(1), size);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   function getSamples() {

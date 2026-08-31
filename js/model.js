@@ -45,6 +45,11 @@ const Training = (() => {
 
   // ---- Model construction ----------------------------------------------
   function buildModel() {
+    if (typeof tf === 'undefined') {
+      console.error('tf not loaded');
+      try { if (typeof App !== 'undefined' && App.showToast) App.showToast('TensorFlow.js not loaded — cannot build model', 'error'); } catch (_) {}
+      return null;
+    }
     disposeContext();
 
     const m = Store.get('model');
@@ -116,18 +121,21 @@ const Training = (() => {
   // ---- Prediction calls ------------------------------------------------
   // Predict on densely-spaced x for the chart (does not touch train tensors).
   async function predictXs(xs) {
-    if (!ctx.model) return null;
+    if (!ctx.model || !xs || xs.length === 0) return null;
     const rows = xs.map((x) => {
       const f = ctx.featureFn(x);
       return Array.isArray(f) ? f : [f];
     });
-    return await tf.tidy(async () => {
-      const xT = tf.tensor2d(rows, [rows.length, rows[0].length]);
-      const out = ctx.model.predict(xT);
-      const vals = await out.array();
-      out.dispose();
-      return vals.map((r) => r[0]);
-    });
+    const xT = tf.tensor2d(rows, [rows.length, rows[0].length]);
+    const out = ctx.model.predict(xT);
+    let vals;
+    try {
+      vals = await out.array();
+    } finally {
+      xT.dispose();
+      if (out && out.dispose) out.dispose();
+    }
+    return vals.map((r) => r[0]);
   }
 
   // ---- Training loop ----------------------------------------------------
@@ -204,6 +212,12 @@ const Training = (() => {
     if (preds) Store.set({ predictions: { xs, ys: preds } });
   }
 
+  function rebuildOptimizer() {
+    if (ctx.optimizer) { try { ctx.optimizer.dispose(); } catch (_) {} ctx.optimizer = null; }
+    const optCfg = Store.get('training');
+    ctx.optimizer = optCfg.optimizer === 'adam' ? tf.train.adam(optCfg.learningRate) : tf.train.sgd(optCfg.learningRate);
+  }
+
   // ---- Public API --------------------------------------------------------
   return {
     buildModel,
@@ -212,6 +226,7 @@ const Training = (() => {
     runEpochs,
     disposeContext,
     predictXs,
+    rebuildOptimizer,
     get isPaused() { return ctx.isPaused; },
     get stopRequested() { return ctx.stopRequested; },
     get modelExists() { return !!ctx.model; },

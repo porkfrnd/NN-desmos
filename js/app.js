@@ -13,15 +13,30 @@ const App = {
   loopPromise: null,
 
   init() {
-    this.setupCharts();
+    // dependency guard — show friendly message if CDNs fail (offline)
+    if (typeof tf === 'undefined') {
+      this.showToast('TensorFlow.js failed to load — check your internet connection and refresh.', 'error');
+      console.error('tf is undefined — CDN load failed');
+    }
+    if (typeof Chart === 'undefined') {
+      this.showToast('Chart.js failed to load — charts will not render.', 'error');
+      console.error('Chart is undefined — CDN load failed');
+    }
+    try { this.setupCharts(); } catch (e) { console.error('Charts init failed', e); }
     this.setupPresets();
-    this.setupCanvas();
+    try { this.setupCanvas(); } catch (e) { console.error('Canvas init failed', e); }
     this.setupArchitecture();
     this.setupHyperparams();
     this.setupControls();
     this.setupStatus();
     this.bindDataSubscriptions();
-    this.loadPreset('sine'); // initial dataset
+    try { this.loadPreset('sine'); } catch (e) { console.error('loadPreset failed', e); this.showToast('Failed to load preset — ' + e.message, 'error'); }
+    // register service-worker-like resize observer for smoother phone rotation
+    let resizeTimer;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { try { Charts.resize(); } catch (_) {} }, 80);
+    }, { passive: true });
   },
 
   // ---- Charts ----
@@ -113,7 +128,9 @@ const App = {
     neuronsRange.addEventListener('change', () => { this.applyArchFromDom(layersRange, neuronsRange, actSelect, fourierToggle); });
     actSelect.addEventListener('change', () => { this.applyArchFromDom(layersRange, neuronsRange, actSelect, fourierToggle); });
     fourierToggle.addEventListener('click', () => {
-      fourierToggle.classList.toggle('active');
+      const on = !fourierToggle.classList.contains('active');
+      fourierToggle.classList.toggle('active', on);
+      fourierToggle.setAttribute('aria-checked', on ? 'true' : 'false');
       this.applyArchFromDom(layersRange, neuronsRange, actSelect, fourierToggle);
     });
 
@@ -165,15 +182,24 @@ const App = {
 
     lr.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), learningRate: Math.pow(10, parseFloat(lr.value)) } });
-      // LR change rebuilds the optimizer (keeps model weights via buildModel
-      // reconstruction on the same architecture).
-      Training.buildModel();
-      Training.setDataTensors();
+      // keep current weights if already training — just swap optimizer
+      if (Training.modelExists && Training.epochCounter > 0) {
+        if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
+        else { Training.buildModel(); Training.setDataTensors(); }
+        this.showToast('Learning rate will apply to next Start', 'success');
+      } else {
+        Training.buildModel(); Training.setDataTensors();
+      }
     });
     opt.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), optimizer: opt.value } });
-      Training.buildModel();
-      Training.setDataTensors();
+      if (Training.modelExists && Training.epochCounter > 0) {
+        if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
+        else { Training.buildModel(); Training.setDataTensors(); }
+        this.showToast('Optimizer will apply to next Start', 'success');
+      } else {
+        Training.buildModel(); Training.setDataTensors();
+      }
     });
     epochsRange.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), maxEpochs: parseInt(epochsRange.value, 10) } });
@@ -214,18 +240,24 @@ const App = {
 
   async runLoop() {
     const cfg = Store.get('training');
+    const target = cfg.maxEpochs;
     while (!Training.stopRequested && !Training.isPaused) {
-      const status = await Training.runEpochs(Math.min(cfg.maxEpochs, 100));
+      if (Training.epochCounter >= target) {
+        this.setStatus('idle');
+        this.showToast('Reached ' + target + ' epochs', 'success');
+        return;
+      }
+      const remaining = target - Training.epochCounter;
+      const chunk = Math.min(remaining, 50);
+      const status = await Training.runEpochs(chunk);
       if (status === 'nan' || status === 'diverged') {
         this.handleRunEnd(status);
         return;
       }
-      if (status === 'stopped') {
+      if (status === 'stopped') { this.setStatus('idle'); return; }
+      if (Training.isPaused) { this.setStatus('paused'); return; }
+      if (status === 'done' && Training.epochCounter >= target) {
         this.setStatus('idle');
-        return;
-      }
-      if (Training.isPaused) {
-        this.setStatus('paused');
         return;
       }
       await tf.nextFrame();
@@ -283,12 +315,7 @@ const App = {
     this.statusEl = $('#statusDot');
     this.epochEl = $('#epochVal');
     this.lossEl = $('#lossVal');
-    Store.subscribe('run', (run) => {
-      if (run.epoch !== undefined && this.epochEl) this.epochEl.textContent = run.epoch;
-      if (run.loss != null && this.lossEl) {
-        this.lossEl.textContent = run.loss.toExponential(3);
-      }
-    });
+    // run subscription is handled in bindDataSubscriptions
   },
 
   setStatus(status) {
@@ -313,34 +340,50 @@ const App = {
   // ---- Data rendering (charts) ----
   bindDataSubscriptions() {
     Store.subscribe('data', () => this.renderAll());
+    Store.subscribe('predictions', () => this.updatePredictionOnly());
+    Store.subscribe('lossHistory', () => {
+      Charts.setLoss(Store.get('lossHistory'));
+    });
+    // also update when model changes theme
+    Store.subscribe('run', (run) => {
+      if (this.epochEl) this.epochEl.textContent = run.epoch ?? 0;
+      if (this.lossEl) this.lossEl.textContent = run.loss != null ? Number(run.loss).toExponential(2) : '—';
+    });
   },
 
   renderAll() {
     const data = Store.get('data');
     const pred = Store.get('predictions');
-    // Ground truth from store x; if custom, xs from data.
-    if (data.xs && data.xs.length) {
-      const gtXs = data.xs;
-      const gtYs = data.ys;
-      let predXs = pred.xs || [];
-      let predYs = pred.ys || [];
-      if (!predYs.length && Training.modelExists) {
-        // Compute an initial prediction immediately.
-        Training.predictXs(predXs.length ? predXs : gtXs).then((ys) => {
-          if (ys) Charts.setPrediction(gtXs, gtYs, predXs, ys);
-        });
-        return;
-      }
-      Charts.setPrediction(gtXs, gtYs, predXs, predYs);
+    if (!data.xs || !data.xs.length) return;
+    const gtXs = data.xs;
+    const gtYs = data.ys;
+    let predXs = pred.xs || [];
+    let predYs = pred.ys || [];
+    // keep loss chart in sync
+    Charts.setLoss(Store.get('lossHistory'));
+    if (!predYs.length && Training.modelExists) {
+      const xs = predXs.length ? predXs : gtXs;
+      Training.predictXs(xs).then((ys) => {
+        if (ys) {
+          // store it so future renders are consistent
+          Store.set({ predictions: { xs, ys } });
+        } else {
+          Charts.setPrediction(gtXs, gtYs, [], []);
+        }
+      });
+      // show ground truth alone until prediction arrives
+      Charts.setPrediction(gtXs, gtYs, [], []);
+      return;
     }
+    Charts.setPrediction(gtXs, gtYs, predXs, predYs);
   },
 
   updatePredictionOnly() {
     const data = Store.get('data');
     const pred = Store.get('predictions');
-    if (data.xs && pred.xs) {
-      Charts.setPrediction(data.xs, data.ys, pred.xs, pred.ys);
-    }
+    if (!data.xs || !pred.xs) return;
+    Charts.setPrediction(data.xs, data.ys, pred.xs, pred.ys);
+    Charts.setLoss(Store.get('lossHistory'));
   },
 
   // ---- Toasts ----

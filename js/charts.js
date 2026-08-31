@@ -1,147 +1,175 @@
-// Chart.js-based charts. Prediction plot = dashed ground truth + solid
-// glowing prediction line. Loss plot = MSE vs epoch with log-scale y-axis.
-//
-// We keep a single source-of-truth merge of current data per epoch cadence,
-// and update it in place so the charts visibly step rather than violently
-// jump between frames. Chart.js native animation is enabled (it gives smooth
-// stepping) but with short durations so frequent re-renders don't fight.
+// Chart.js charts — prediction + log loss. Fixed data mapping and log-scale guards.
 
 const Charts = (() => {
   let predChart = null;
   let lossChart = null;
 
+  function cssVar(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
   function init(canvasPred, canvasLoss) {
-    // ---- Prediction chart ----
-    const predCtx = canvasPred.getContext('2d');
-    predChart = new Chart(predCtx, {
+    if (!canvasPred || !canvasLoss) return;
+    // destroy existing if re-init (e.g. theme toggle)
+    if (predChart) { try { predChart.destroy(); } catch (_) {} predChart = null; }
+    if (lossChart) { try { lossChart.destroy(); } catch (_) {} lossChart = null; }
+
+    const isDark = document.documentElement.dataset.theme === 'dark';
+    const accent = cssVar('--accent', '#2563eb');
+    const text = cssVar('--text', isDark ? '#e8e6e1' : '#1c1c1a');
+    const muted = cssVar('--muted', '#77776f');
+    const border = cssVar('--border', '#d8d8d2');
+    const gridCol = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+
+    predChart = new Chart(canvasPred.getContext('2d'), {
       type: 'line',
       data: {
-        labels: [],
         datasets: [
           {
             label: 'Ground Truth',
             data: [],
-            borderColor: '#6b6f82',
+            borderColor: muted,
             borderDash: [6, 4],
-            borderWidth: 2,
+            borderWidth: 1.8,
             pointRadius: 0,
             fill: false,
+            tension: 0.15,
+            parsing: false,
           },
           {
             label: 'Prediction',
             data: [],
-            borderColor: '#6c8cff',
-            borderWidth: 2.5,
+            borderColor: accent,
+            borderWidth: 2.2,
             pointRadius: 0,
             fill: false,
+            tension: 0.15,
+            parsing: false,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 150 },
+        animation: { duration: 120 },
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: {
-            labels: { color: '#9498ab', boxWidth: 18, padding: 16 },
-          },
+          legend: { labels: { color: muted, boxWidth: 14, padding: 14, font: { size: 11 } } },
           tooltip: {
-            backgroundColor: '#1a1d27',
-            borderColor: '#363b4e',
+            backgroundColor: cssVar('--panel', '#fff'),
+            borderColor: border,
             borderWidth: 1,
-            titleColor: '#e4e6ef',
-            bodyColor: '#e4e6ef',
+            titleColor: text,
+            bodyColor: text,
+            callbacks: {
+              title: (items) => items.length ? `x = ${Number(items[0].parsed.x).toFixed(3)}` : '',
+            },
           },
         },
         scales: {
           x: {
-            title: { display: true, text: 'x', color: '#6b6f82' },
-            grid: { color: 'rgba(255,255,255,0.06)' },
-            ticks: { color: '#6b6f82', maxTicksLimit: 9 },
-            min: -1,
-            max: 1,
+            type: 'linear',
+            title: { display: true, text: 'x  ∈  [-1, 1]', color: muted, font: { size: 10 } },
+            grid: { color: gridCol },
+            ticks: { color: muted, maxTicksLimit: 9 },
+            min: -1, max: 1,
           },
           y: {
-            title: { display: true, text: 'f(x)', color: '#6b6f82' },
-            grid: { color: 'rgba(255,255,255,0.06)' },
-            ticks: { color: '#6b6f82' },
-            min: -1.6,
-            max: 1.6,
+            title: { display: true, text: 'f(x)', color: muted, font: { size: 10 } },
+            grid: { color: gridCol },
+            ticks: { color: muted },
+            min: -1.6, max: 1.6,
           },
         },
       },
     });
 
-    // ---- Loss chart ----
-    const lossCtx = canvasLoss.getContext('2d');
-    lossChart = new Chart(lossCtx, {
+    lossChart = new Chart(canvasLoss.getContext('2d'), {
       type: 'line',
       data: {
-        labels: [],
         datasets: [
           {
-            label: 'MSE Loss',
+            label: 'MSE',
             data: [],
-            borderColor: '#ff922b',
-            borderWidth: 2,
+            borderColor: '#f59e0b',
+            borderWidth: 1.8,
             pointRadius: 0,
             fill: false,
+            tension: 0.2,
+            parsing: false,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 150 },
+        animation: { duration: 120 },
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: '#1a1d27',
-            borderColor: '#363b4e',
+            backgroundColor: cssVar('--panel', '#fff'),
+            borderColor: border,
             borderWidth: 1,
-            titleColor: '#e4e6ef',
-            bodyColor: '#e4e6ef',
+            titleColor: text,
+            bodyColor: text,
           },
         },
         scales: {
           x: {
-            title: { display: true, text: 'Epoch', color: '#6b6f82' },
-            grid: { color: 'rgba(255,255,255,0.06)' },
-            ticks: { color: '#6b6f82', maxTicksLimit: 8 },
+            type: 'linear',
+            title: { display: true, text: 'Epoch', color: muted, font: { size: 10 } },
+            grid: { color: gridCol },
+            ticks: { color: muted, maxTicksLimit: 8 },
           },
           y: {
             type: 'logarithmic',
-            title: { display: true, text: 'MSE (log)', color: '#6b6f82' },
-            grid: { color: 'rgba(255,255,255,0.06)' },
-            ticks: { color: '#6b6f82' },
+            title: { display: true, text: 'MSE (log)', color: muted, font: { size: 10 } },
+            grid: { color: gridCol },
+            ticks: {
+              color: muted,
+              callback: (v) => Number(v).toExponential(0),
+            },
           },
         },
       },
     });
   }
 
-  // Update the prediction chart with ground truth and prediction curves.
   function setPrediction(gtXs, gtYs, predXs, predYs) {
     if (!predChart) return;
-    predChart.data.labels = gtXs;
-    predChart.data.datasets[0].data = gtYs;
-    predChart.data.datasets[1].data = predXs.map((x, i) => predYs[i]);
-    predChart.update();
+    // use {x,y} so pred and gt can have different sampling
+    const gt = (gtXs || []).map((x, i) => ({ x, y: gtYs[i] }));
+    const pr = (predXs || []).map((x, i) => ({ x, y: predYs[i] })).filter(p => Number.isFinite(p.y));
+    predChart.data.datasets[0].data = gt;
+    predChart.data.datasets[1].data = pr;
+    // Chart.js with parsing:false expects update without re-parsing; just update
+    predChart.update('none');
   }
 
-  // Update the loss chart with history [{epoch, loss}].
   function setLoss(hist) {
     if (!lossChart) return;
-    lossChart.data.labels = hist.map((h) => h.epoch);
-    lossChart.data.datasets[0].data = hist.map((h) => h.loss);
-    lossChart.update();
+    const pts = (hist || [])
+      .filter(h => Number.isFinite(h.loss) && h.loss > 0)
+      .map(h => ({ x: h.epoch, y: Math.max(h.loss, 1e-6) }));
+    // if all losses are zero, show flat line at 1e-6 instead of log(0) crash
+    if (!pts.length && hist && hist.length) {
+      pts.push({ x: hist[hist.length-1].epoch, y: 1e-6 });
+    }
+    lossChart.data.datasets[0].data = pts;
+    lossChart.update('none');
   }
 
   function resize() {
-    if (predChart) predChart.resize();
-    if (lossChart) lossChart.resize();
+    if (predChart) try { predChart.resize(); } catch (_) {}
+    if (lossChart) try { lossChart.resize(); } catch (_) {}
   }
 
-  return { init, setPrediction, setLoss, resize };
+  function destroy() {
+    if (predChart) try { predChart.destroy(); } catch (_) {}
+    if (lossChart) try { lossChart.destroy(); } catch (_) {}
+    predChart = null; lossChart = null;
+  }
+
+  return { init, setPrediction, setLoss, resize, destroy };
 })();
