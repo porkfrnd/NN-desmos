@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Neural Network Function Approximator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="dashboard">
+    <!-- Control Panel (Left) -->
+    <aside class="control-panel">
+      <!-- Function / Target -->
+      <section class="panel-section">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 3v18h18" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" />
+          </svg>
+          Target Function
+        </h3>
+        <div id="presetGrid" class="preset-grid"></div>
+        <div style="height: 12px"></div>
+        <div class="canvas-container">
+          <canvas id="drawCanvas"></canvas>
+          <div class="canvas-label">draw → x∈[-1,1], y∈[-1.5,1.5]</div>
+          <div class="canvas-overlay">
+            <button id="clearCanvas" class="btn btn-icon btn-danger" title="Clear drawing">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Architecture -->
+      <section class="panel-section">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="6" cy="6" r="2" /><circle cx="6" cy="12" r="2" /><circle cx="6" cy="18" r="2" />
+            <circle cx="12" cy="9" r="2" /><circle cx="12" cy="15" r="2" />
+            <circle cx="18" cy="12" r="2" />
+            <path d="M7 7l4 2M7 12h4M7 17l4-2M13 10l4 1M13 14l4-1" />
+          </svg>
+          Architecture
+        </h3>
+        <div class="control-row">
+          <label for="hiddenLayers">Hidden Layers <span id="hiddenLayersVal" class="value"></span></label>
+          <input type="range" id="hiddenLayers" min="1" max="5" step="1" value="3" />
+        </div>
+        <div class="control-row">
+          <label for="neuronsPerLayer">Neurons / Layer <span id="neuronsPerLayerVal" class="value"></span></label>
+          <input type="range" id="neuronsPerLayer" min="2" max="64" step="1" value="16" />
+        </div>
+        <div class="control-row">
+          <label for="activation">Activation</label>
+          <select id="activation">
+            <option value="tanh" selected>Tanh</option>
+            <option value="relu">ReLU</option>
+            <option value="sigmoid">Sigmoid</option>
+            <option value="sine">Sine (SIREN)</option>
+          </select>
+        </div>
+        <div class="toggle-row">
+          <label for="fourierFeatures">Fourier Features (k=0..3)</label>
+          <div id="fourierFeatures" class="toggle" title="Prepend [sin(2^k·πx), cos(2^k·πx)] features"></div>
+        </div>
+      </section>
+
+      <!-- Hyperparameters -->
+      <section class="panel-section">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+            <path d="M1 14h6M9 8h6M17 16h6" />
+          </svg>
+          Hyperparameters
+        </h3>
+        <div class="control-row">
+          <label for="learningRate">Learning Rate <span id="learningRateVal" class="value"></span></label>
+          <input type="range" id="learningRate" min="-3" max="-1" step="0.05" value="-3" />
+        </div>
+        <div class="control-row">
+          <label for="optimizer">Optimizer</label>
+          <select id="optimizer">
+            <option value="adam" selected>Adam</option>
+            <option value="sgd">SGD</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="maxEpochs">Run to <span id="maxEpochsVal" class="value"></span> epochs / chunk</label>
+          <input type="range" id="maxEpochs" min="100" max="2000" step="100" value="500" />
+        </div>
+      </section>
+    </aside>
+
+    <!-- Main Panel (Right) -->
+    <main class="main-panel">
+      <!-- Execution controls + status -->
+      <section class="status-bar">
+        <div class="status-item">
+          <span id="statusDot" class="status-dot"></span>
+          <span id="statusLabel">Idle</span>
+        </div>
+        <div class="status-item">
+          Epoch <span id="epochVal" class="status-value">0</span>
+        </div>
+        <div class="status-item">
+          Loss <span id="lossVal" class="status-value">—</span>
+        </div>
+        <div class="training-controls">
+          <button id="btnStart" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+            Start
+          </button>
+          <button id="btnPause" class="btn btn-success">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg>
+            Pause
+          </button>
+          <button id="btnStep" class="btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 4l10 8-10 8z" fill="currentColor"/></svg>
+            Step
+          </button>
+          <button id="btnResetWeights" class="btn btn-danger">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+            Reset
+          </button>
+        </div>
+      </section>
+
+      <!-- Prediction chart -->
+      <section class="chart-container">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg>
+          Approximation
+        </h3>
+        <div class="chart-wrapper">
+          <canvas id="predChart"></canvas>
+        </div>
+      </section>
+
+      <!-- Loss chart -->
+      <section class="chart-container">
+        <h3>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18" /><path d="M5 15l4-6 4 4 6-8" /></svg>
+          Training Loss (log scale)
+        </h3>
+        <div class="chart-wrapper">
+          <canvas id="lossChart"></canvas>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Dependencies (load order matters) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+  <!-- App modules -->
+  <script src="js/store.js"></script>
+  <script src="js/presets.js"></script>
+  <script src="js/siren.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/canvas.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
