@@ -14,26 +14,31 @@ const PRESET_DEFS = {
   [Presets.SIN]: {
     name: 'Sine',
     formula: 'sin(2\u03C0x)',
+    equation: 'sin(2*pi*x)',
     fn: (x) => Math.sin(2 * Math.PI * x),
   },
   [Presets.SQUARE]: {
     name: 'Square',
     formula: 'sign(sin(2\u03C0x))',
+    equation: 'sign(sin(2*pi*x))',
     fn: (x) => Math.sign(Math.sin(2 * Math.PI * x)),
   },
   [Presets.DAMPED]: {
     name: 'Damped',
     formula: 'e\u207B\u02E3cos(4\u03C0x)',
+    equation: 'exp(-x)*cos(4*pi*x)',
     fn: (x) => Math.exp(-x) * Math.cos(4 * Math.PI * x),
   },
   [Presets.COMPOSITE]: {
     name: 'Composite',
     formula: 'sin(2\u03C0x)+0.5sin(10\u03C0x)',
+    equation: 'sin(2*pi*x) + 0.5*sin(10*pi*x)',
     fn: (x) => Math.sin(2 * Math.PI * x) + 0.5 * Math.sin(10 * Math.PI * x),
   },
   [Presets.CUSTOM]: {
-    name: 'Drawn',
-    formula: 'freehand',
+    name: 'Custom',
+    formula: 'equation',
+    equation: '',
     fn: null,
   },
 };

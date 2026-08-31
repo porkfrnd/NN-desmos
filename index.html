@@ -26,16 +26,23 @@
     <button id="themeToggle" type="button" aria-label="Toggle theme">Dark</button>
   </header>
 
-  <p class="lede">Draw a curve or pick a preset. Watch a tiny network learn it live — all in your browser.</p>
+  <p class="lede">Type an equation like <code>y = x^2 + 6*x</code> — like Desmos — and watch a tiny network learn it live.</p>
 
-  <!-- Target -->
+  <!-- Target presets -->
   <nav class="tabs" id="presetGrid" aria-label="Target presets"></nav>
 
-  <!-- Draw board -->
-  <div class="boardwrap" id="boardWrap">
-    <canvas id="drawCanvas" aria-label="Draw target function"></canvas>
-    <button id="clearCanvas" class="fsbtn" type="button" aria-label="Clear drawing" title="Clear">✕</button>
-    <span class="boardhint">draw → x∈[-1,1] &nbsp; y∈[-1.5,1.5]</span>
+  <!-- Equation — Desmos-style -->
+  <div class="eq-card">
+    <label class="eq-label" for="equationInput">Equation</label>
+    <div class="eq-row">
+      <span class="eq-prefix">y =</span>
+      <input id="equationInput" type="text" spellcheck="false" autocomplete="off"
+             placeholder="x^2 + 6*x  or  sin(2*pi*x) + 0.5*sin(10*pi*x)"
+             aria-label="Equation, in x">
+      <button id="equationApply" class="primary" type="button">Plot</button>
+    </div>
+    <div id="equationError" class="eq-error" role="alert" hidden></div>
+    <p class="eq-hint">x ∈ [-1, 1], y clipped to [-1.5, 1.5] for training. Try <code>sin</code>, <code>cos</code>, <code>exp</code>, <code>sqrt</code>, <code>abs</code>, <code>sign</code>, <code>^</code>, <code>pi</code>, <code>e</code>. Press Enter to plot.</p>
   </div>
 
   <!-- Status -->
@@ -51,6 +58,7 @@
     <button id="btnPause" type="button">⏸ Pause</button>
     <button id="btnStep" type="button">↷ Step 10</button>
     <button id="btnResetWeights" type="button">↺ Reset</button>
+    <button id="btnExport" type="button" title="Download weights &amp; biases as JSON">⤓ Export</button>
   </div>
 
   <!-- Approximation -->
@@ -144,9 +152,9 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="js/store.js"></script>
 <script src="js/presets.js"></script>
+<script src="js/equation.js"></script>
 <script src="js/siren.js"></script>
 <script src="js/model.js"></script>
-<script src="js/canvas.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/app.js"></script>
 <script>
@@ -165,14 +173,6 @@
           var d = Store.get('data'), p = Store.get('predictions');
           if (d && d.xs && d.xs.length) Charts.setPrediction(d.xs, d.ys, p.xs || [], p.ys || []);
           Charts.setLoss(Store.get('lossHistory'));
-        }
-      } catch (e) {}
-      // redraw canvas with new theme (don't clear the drawing)
-      try {
-        var cv = document.getElementById('drawCanvas');
-        if (cv && window.CanvasDraw) {
-          // nudge canvas to redraw with new CSS vars
-          var ev = new Event('resize'); window.dispatchEvent(ev);
         }
       } catch (e) {}
     }

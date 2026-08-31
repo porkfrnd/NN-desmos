@@ -218,6 +218,42 @@ const Training = (() => {
     ctx.optimizer = optCfg.optimizer === 'adam' ? tf.train.adam(optCfg.learningRate) : tf.train.sgd(optCfg.learningRate);
   }
 
+  function exportWeights() {
+    if (!ctx.model) return null;
+    const m = Store.get('model');
+    const d = Store.get('data');
+    const layers = [];
+    // model.layers includes InputLayer at 0; skip it
+    for (let i = 1; i < ctx.model.layers.length; i++) {
+      const layer = ctx.model.layers[i];
+      const ws = layer.getWeights();
+      if (!ws.length) continue;
+      const isSiren = layer.getClassName && layer.getClassName() === 'SirenDense';
+      const kind = isSiren ? 'siren' : 'dense';
+      const wT = ws[0], bT = ws[1] || null;
+      layers.push({
+        index: i,
+        kind,
+        units: layer.units || (bT ? bT.shape[0] : wT.shape[1]),
+        activation: isSiren ? 'sine' : (layer.activation ? layer.activation.getClassName() : 'linear'),
+        kernel: { shape: wT.shape.slice(), data: Array.from(wT.dataSync()) },
+        bias: bT ? { shape: bT.shape.slice(), data: Array.from(bT.dataSync()) } : null,
+      });
+    }
+    return {
+      meta: {
+        exportedAt: new Date().toISOString(),
+        tfjsVersion: (typeof tf !== 'undefined' && tf.version && tf.version.tfjs) || null,
+        architecture: { ...m, inputDim: m.fourierFeatures ? 8 : 1 },
+        domain: { xMin: -1, xMax: 1, yClip: [-1.5, 1.5] },
+        equation: d.equation || d.presetId || null,
+        epochsTrained: ctx.epochCounter,
+        lastLoss: ctx.lastLoss ?? null,
+      },
+      layers,
+    };
+  }
+
   // ---- Public API --------------------------------------------------------
   return {
     buildModel,
@@ -227,6 +263,7 @@ const Training = (() => {
     disposeContext,
     predictXs,
     rebuildOptimizer,
+    exportWeights,
     get isPaused() { return ctx.isPaused; },
     get stopRequested() { return ctx.stopRequested; },
     get modelExists() { return !!ctx.model; },
