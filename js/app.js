@@ -93,6 +93,8 @@ const App = {
       params.set('act', m.activation);
       params.set('emb', m.embedding);
       params.set('lr', String(tr.learningRate));
+      params.set('wd', String(tr.weightDecay));
+      params.set('noise', String(tr.noise ?? 0));
       params.set('train', `${dom.trainMin},${dom.trainMax}`);
       params.set('eval', `${dom.evalMin},${dom.evalMax}`);
       location.hash = params.toString();
@@ -511,6 +513,8 @@ const App = {
     Training.setPaused(false);
     Training.setStopRequested(false);
     this.setStatus('training');
+    // auto-open loss when training starts (it's closed by default now)
+    try { const loss = document.getElementById('lossWrap'); if (loss && !loss.open) loss.open = true; } catch (_) {}
     this.runLoop();
   },
 

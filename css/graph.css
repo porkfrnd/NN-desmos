@@ -67,3 +67,15 @@
   .chartbox.hero-box { height: 52vh; min-height: 320px; }
   .zoom-controls button { width: 30px; height: 30px; }
 }
+
+.graph-legend {
+  display: flex; gap: 12px; align-items: center;
+  padding: 6px 12px; font-size: 11px; color: var(--muted);
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.graph-legend .train-dot-legend { display: flex; align-items: center; gap: 4px; }
+.loss-details { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--panel); }
+.loss-details summary { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; cursor: pointer; list-style: none; }
+.loss-details summary::-webkit-details-marker { display: none; }
+.loss-details summary h3 { font-size: 13px; font-weight: 600; }
+.loss-details[open] summary { border-bottom: 1px solid var(--border); }

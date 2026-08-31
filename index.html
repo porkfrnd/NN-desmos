@@ -30,19 +30,17 @@
 <div class="app">
 
   <header class="top">
-    <h1>NN <span>·</span> Desmos <small style="font-weight:400; color:var(--muted); font-size:12px; margin-left:6px;">a neural net that draws</small></h1>
+    <h1>NN <span>·</span> Desmos</h1>
     <div class="top-actions">
       <button id="themeToggle" type="button" aria-label="Toggle theme">Dark</button>
       <button id="settingsToggle" type="button" aria-label="Settings" title="Settings">⚙</button>
     </div>
   </header>
+  <p class="tagline">Type an equation and press Plot — the network learns it live. Try <code>x^3</code> or <code>sin(5*x)</code>.</p>
 
   <!-- Graph — hero, most of the screen like Desmos -->
   <div class="graphwrap hero" id="graphHero">
-    <header>
-      <h3>Graph</h3>
-      <span class="legend"><i class="swatch gt"></i> truth &nbsp; <i class="swatch pr"></i> prediction</span>
-    </header>
+    <div class="graph-legend"><span><i class="swatch gt"></i> truth</span><span><i class="swatch pr"></i> prediction</span><span class="train-dot-legend"><i class="dot" style="background:var(--accent); width:6px; height:6px;"></i> samples</span></div>
     <div class="chartbox hero-box">
       <canvas id="predChart" aria-label="Approximation graph"></canvas>
       <div class="zoom-controls" aria-label="Zoom controls">
@@ -81,36 +79,40 @@
     <button id="btnPause" type="button">⏸ Pause</button>
     <button id="btnStep" type="button">↷ Step</button>
     <button id="btnResetWeights" type="button">↺ Reset</button>
-    <button id="btnExport" type="button" title="Download weights &amp; biases as JSON">⤓ JSON</button>
-    <button id="btnExportPNG" type="button" title="Download graph as PNG">🖼 PNG</button>
-    <button id="btnShare" type="button" title="Copy shareable link">🔗 Share</button>
-    <button id="btnCode" type="button" title="Show PyTorch code">🐍 Code</button>
+    <div class="toolbar-sep"></div>
+    <button id="btnExport" type="button" class="ghost" title="Download JSON">⤓<span class="btn-label"> JSON</span></button>
+    <button id="btnExportPNG" type="button" class="ghost" title="Download PNG">🖼<span class="btn-label"> PNG</span></button>
+    <button id="btnShare" type="button" class="ghost" title="Copy link">🔗<span class="btn-label"> Share</span></button>
+    <button id="btnCode" type="button" class="ghost" title="PyTorch code">🐍<span class="btn-label"> Code</span></button>
   </div>
 
-  <!-- Loss — secondary, smaller -->
-  <div class="graphwrap" id="lossWrap">
-    <header>
-      <h3>Training loss</h3>
-      <span class="hint">log scale</span>
-    </header>
+  <!-- Loss — collapsible, like Desmos folder -->
+  <details class="graphwrap loss-details" id="lossWrap" open>
+    <summary><h3>Loss</h3><span class="hint">log scale — click to collapse</span></summary>
     <div class="chartbox sm"><canvas id="lossChart"></canvas></div>
-  </div>
-
-  </div>
-
-  <details class="gallery-details">
-    <summary>Examples — click to try</summary>
-    <div class="gallery-grid">
-      <button class="gallery-card" data-eq="sin(3*pi*x) * exp(-0.5*x)"><b>Wave</b><small>sin(3πx)·e^{-0.5x}</small></button>
-      <button class="gallery-card" data-eq="x^3 - 2*x"><b>Cubic</b><small>x³−2x</small></button>
-      <button class="gallery-card" data-eq="abs(x)"><b>Absolute</b><small>|x|</small></button>
-      <button class="gallery-card" data-eq="tanh(5*x)"><b>Step</b><small>tanh(5x)</small></button>
-      <button class="gallery-card" data-eq="sin(8*pi*x) * 0.5 + cos(2*pi*x)"><b>Chord</b><small>0.5·sin(8πx)+cos(2πx)</small></button>
-      <button class="gallery-card" data-eq="exp(-10*(x-0.3)^2)"><b>Gaussian</b><small>e^{-10(x-0.3)²}</small></button>
-    </div>
   </details>
 
-  <p class="foot">Built at 2am by <a href="https://github.com/porkfrnd">Binayak</a> — <a href="https://github.com/porkfrnd/NN-desmos">source</a> · <a href="#" onclick="document.getElementById('settingsToggle').click(); return false;">settings</a> · <code>space</code> to train</p>
+  </div>
+
+  <div class="gallery">
+    <div class="gallery-head">
+      <span>Examples</span>
+      <span class="gallery-hint">tap to load →</span>
+    </div>
+    <div class="gallery-grid">
+      <button class="gallery-card" data-eq="sin(3*pi*x) * exp(-0.5*x)">Wave<small>sin·exp</small></button>
+      <button class="gallery-card" data-eq="x^3 - 2*x">Cubic<small>x³−2x</small></button>
+      <button class="gallery-card" data-eq="abs(x)">Absolute<small>|x|</small></button>
+      <button class="gallery-card" data-eq="tanh(5*x)">Step<small>tanh 5x</small></button>
+      <button class="gallery-card" data-eq="sin(8*pi*x) * 0.5 + cos(2*pi*x)">Chord<small>0.5·sin+cos</small></button>
+      <button class="gallery-card" data-eq="exp(-10*(x-0.3)^2)">Gaussian<small>e^{-10(x-0.3)²}</small></button>
+    </div>
+  </div>
+
+  <footer class="site-foot">
+    <span>NN Desmos — an experiment in fitted curves</span>
+    <span><a href="https://github.com/porkfrnd/NN-desmos">Source</a> · <a href="#" onclick="document.getElementById('settingsToggle').click(); return false;">Settings</a> · <code>Space</code> to train</span>
+  </footer>
 
 </div>
 
