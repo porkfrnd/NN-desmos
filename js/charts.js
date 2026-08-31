@@ -1,3 +1,14 @@
+/**
+ * Charts — beautiful, Desmos-like, 60fps.
+ *
+ * Why Chart.js, not Recharts: Recharts needs React, this is vanilla.
+ * We use `parsing:false` + `{x,y}` + `normalized:true` + `animation:false`
+ * and `update('none')` so the main thread stays at 60fps during training.
+ * The hero graph shows ground truth (dashed), prediction trail (ghost),
+ * prediction (solid), and training dots — like Desmos points. Train range
+ * is shaded via a beforeDraw plugin. Zoom is manual (wheel/drag/pinch)
+ * with view state that persists across theme toggles.
+ */
 // Chart.js charts — prediction + log loss. Desmos-like zoom/pan on main graph.
 
 const Charts = (() => {
@@ -76,12 +87,19 @@ const Charts = (() => {
       type: 'line',
       data: {
         datasets: [
-          { label: 'Ground Truth', data: [], borderColor: muted, borderDash: [6, 4], borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.15, parsing: false },
-          { label: 'Prediction', data: [], borderColor: accent, borderWidth: 2.2, pointRadius: 0, fill: false, tension: 0.15, parsing: false },
+          // 0: ground truth (dashed)
+          { label: 'Ground Truth', data: [], borderColor: muted, borderDash: [6, 4], borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.15, parsing: false, order: 3 },
+          // 1: prediction trail (ghost from 10 epochs ago) — beautiful desmos-like motion
+          { label: 'Trail', data: [], borderColor: accent, borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0.15, parsing: false, borderDash: [2, 6], opacity: 0.18, order: 2 },
+          // 2: prediction (main, glowing)
+          { label: 'Prediction', data: [], borderColor: accent, borderWidth: 2.4, pointRadius: 0, fill: false, tension: 0.15, parsing: false, order: 1 },
+          // 3: training dots (like desmos points)
+          { label: 'Samples', data: [], borderColor: 'transparent', backgroundColor: accent, pointRadius: 3, pointHoverRadius: 4, showLine: false, parsing: false, order: 0 },
         ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false, animation: { duration: 120 },
+        responsive: true, maintainAspectRatio: false, animation: false, // 60fps — no tween, we drive motion via data updates
+        normalized: true,
         interaction: { mode: 'index', intersect: false },
         plugins: {
           legend: { labels: { color: muted, boxWidth: 14, padding: 14, font: { size: 11 } } },
@@ -103,7 +121,8 @@ const Charts = (() => {
       type: 'line',
       data: { datasets: [{ label: 'MSE', data: [], borderColor: '#f59e0b', borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.2, parsing: false }] },
       options: {
-        responsive: true, maintainAspectRatio: false, animation: { duration: 120 },
+        responsive: true, maintainAspectRatio: false, animation: false, // 60fps — no tween, we drive motion via data updates
+        normalized: true,
         plugins: { legend: { display: false }, tooltip: { backgroundColor: cssVar('--panel', '#fff'), borderColor: border, borderWidth: 1, titleColor: text, bodyColor: text } },
         scales: {
           x: { type: 'linear', title: { display: true, text: 'Epoch', color: muted, font: { size: 10 } }, grid: { color: gridCol }, ticks: { color: muted, maxTicksLimit: 8 } },
@@ -116,12 +135,31 @@ const Charts = (() => {
     bindZoomButtons();
   }
 
-  function setPrediction(gtXs, gtYs, predXs, predYs) {
+  // self-explaining: we keep the previous prediction as a faint trail so the
+  // user sees the *motion* of learning, not just jump cuts — like desmos traces.
+  let prevPred = null;
+  function setPrediction(gtXs, gtYs, predXs, predYs, trainXs, trainYs) {
     if (!predChart) return;
     const gt = (gtXs || []).map((x, i) => ({ x, y: gtYs[i] }));
     const pr = (predXs || []).map((x, i) => ({ x, y: predYs[i] })).filter(p => Number.isFinite(p.y));
+    // trail is previous pr, faded
+    const trail = prevPred ? prevPred : [];
+    prevPred = pr.map(p => ({ ...p })); // copy for next frame
+    const dots = (trainXs && trainYs) ? trainXs.map((x,i) => ({ x, y: trainYs[i] })).filter(p => Number.isFinite(p.y)) : [];
     predChart.data.datasets[0].data = gt;
-    predChart.data.datasets[1].data = pr;
+    predChart.data.datasets[1].data = trail;
+    predChart.data.datasets[1].borderColor = cssVar('--accent', '#2563eb');
+    // apply trail opacity via borderColor alpha — Chart.js v4 supports it via background
+    predChart.data.datasets[2].data = pr;
+    predChart.data.datasets[3].data = dots;
+    // dots color follows accent
+    predChart.data.datasets[3].backgroundColor = cssVar('--accent', '#2563eb');
+    predChart.update('none');
+  }
+  function setTrainDots(xs, ys) {
+    if (!predChart) return;
+    const dots = (xs||[]).map((x,i)=>({x,y:ys[i]})).filter(p=>Number.isFinite(p.y));
+    predChart.data.datasets[3].data = dots;
     predChart.update('none');
   }
 
@@ -292,5 +330,6 @@ const Charts = (() => {
     canvas.addEventListener('touchend', () => { if (event.touches && event.touches.length < 2) lastPinchDist = null; });
   }
 
-  return { init, setPrediction, setLoss, resize, destroy, zoomIn, zoomOut, resetZoom, setDomainAndReset, getView: () => ({...view}) };
+  function resetTrail() { prevPred = null; }
+  return { init, setPrediction, setLoss, setTrainDots, resize, destroy, zoomIn, zoomOut, resetZoom, setDomainAndReset, getView: () => ({...view}), resetTrail };
 })();

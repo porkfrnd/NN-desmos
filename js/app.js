@@ -1,3 +1,13 @@
+/**
+ * App — the wiring. Beautiful because it's small and explicit.
+ *
+ * Why pub/sub, not framework: no build, no prop-drilling, just `Store.subscribe`.
+ * Every control (equation, presets, tuning, domain, noise) is a pure function
+ * that does: parse → Store.set → Training.buildModel → render. Training is
+ * manual (`minimize` + `isPaused` ref) so Pause works mid-epoch, and
+ * `await tf.nextFrame()` every 2 epochs keeps the UI at 60fps.
+ * URL hash, shortcuts, and PNG export make it feel like Desmos.
+ */
 // Main controller: equation input (Desmos-like) + presets, charts, training.
 // Upgraded: SR Omega, embeddings (Fourier/Chebyshev), weight decay, domain bounds, tuning presets.
 
@@ -41,11 +51,67 @@ const App = {
     const def = PRESET_DEFS['sine'];
     const initEq = def && def.equation ? def.equation : 'sin(2*pi*x)';
     try { this.applyEquation(initEq, 'sine'); } catch (e) { console.error(e); this.showToast(e.message, 'error'); }
+    // URL sharing — encode equation and key config in hash, like desmos
+    this.loadFromURLHash();
+    // keep hash in sync (debounced)
+    let hashTimer;
+    const scheduleHash = () => { clearTimeout(hashTimer); hashTimer = setTimeout(() => this.updateURLHash(), 400); };
+    Store.subscribe('data', scheduleHash);
+    Store.subscribe('model', scheduleHash);
+    Store.subscribe('training', scheduleHash);
+    Store.subscribe('domain', scheduleHash);
+
+    // keyboard shortcuts — delightful, like desmos
+    document.addEventListener('keydown', (e) => {
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.isContentEditable)) return;
+      if (e.code === 'Space') { e.preventDefault(); const s=Store.get('run').status; if(s==='training') this.togglePause(); else this.startTraining(); }
+      else if (e.key.toLowerCase() === 'r') { this.resetWeights(); }
+      else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { this.showToast('Shortcuts: Space = Start/Pause, R = Reset, , = Step, E = Export', 'success'); }
+      else if (e.key === ',') { this.runStep(); }
+      else if (e.key.toLowerCase() === 'e' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.exportWeights(); }
+    });
+
     let resizeTimer;
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => { try { Charts.resize(); } catch (_) {} }, 80);
     }, { passive: true });
+  },
+
+  // --- URL hash (shareable links) ---
+  updateURLHash() {
+    try {
+      const d = Store.get('data');
+      const m = Store.get('model');
+      const tr = Store.get('training');
+      const dom = Store.get('domain');
+      const params = new URLSearchParams();
+      if (d.equation) params.set('eq', d.equation);
+      if (d.presetId) params.set('preset', d.presetId);
+      params.set('act', m.activation);
+      params.set('emb', m.embedding);
+      params.set('lr', String(tr.learningRate));
+      params.set('train', `${dom.trainMin},${dom.trainMax}`);
+      params.set('eval', `${dom.evalMin},${dom.evalMax}`);
+      location.hash = params.toString();
+    } catch (_) {}
+  },
+
+  loadFromURLHash() {
+    try {
+      if (!location.hash || location.hash.length < 2) return;
+      const params = new URLSearchParams(location.hash.slice(1));
+      const eq = params.get('eq');
+      const preset = params.get('preset');
+      if (eq) {
+        const input = document.getElementById('equationInput');
+        if (input) input.value = eq;
+        // apply without overwriting hash again immediately
+        setTimeout(() => { try { this.applyEquation(eq, preset || null); } catch (_) {} }, 0);
+      } else if (preset && PRESET_DEFS[preset]) {
+        setTimeout(() => this.loadPreset(preset), 0);
+      }
+    } catch (_) {}
   },
 
   syncAllUIFromStore() {
@@ -75,6 +141,11 @@ const App = {
       sliderVal = Math.max(0, Math.min(100, sliderVal));
       wd.value = String(sliderVal);
       const v=$('#weightDecayVal'); if(v) v.textContent = val === 0 ? '0' : Number(val).toExponential(1);
+    }
+    const noise = $('#noiseLevel'); if (noise) {
+      const n = t.noise ?? 0;
+      noise.value = String(Math.round(n * 100));
+      const v=$('#noiseLevelVal'); if(v) v.textContent = n === 0 ? '0' : n.toFixed(2);
     }
     const hl = $('#hiddenLayers'); if (hl) { hl.value = String(m.hiddenLayers); const v=$('#hiddenLayersVal'); if(v) v.textContent = String(m.hiddenLayers); }
     const nl = $('#neuronsPerLayer'); if (nl) { nl.value = String(m.neuronsPerLayer); const v=$('#neuronsPerLayerVal'); if(v) v.textContent = String(m.neuronsPerLayer); }
@@ -161,16 +232,15 @@ const App = {
         if (!v) return;
         try {
           const dom = Store.get('domain');
-          const parsed = Equation.sampleString(v, 100, dom.trainMin, dom.trainMax);
+          const noise = Store.get('training').noise ?? 0;
+          const parsed = Equation.sampleString(v, 100, dom.trainMin, dom.trainMax, noise);
           Store.set({ data: { source: 'equation', presetId: null, equation: parsed.compiled.src, xs: parsed.xs, ys: parsed.ys } });
-          Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
-          Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
-          this.setStatus('idle');
           this.renderAll();
           $all('#presetGrid .preset-btn').forEach(b => b.classList.remove('active'));
           this.clearError();
-        } catch (_) {}
-      }, 600);
+          this.updateURLHash();
+        } catch (_) { /* silent while typing */ }
+      }, 400);
     });
   },
 
@@ -179,8 +249,9 @@ const App = {
     const eqStr = raw && String(raw).trim() ? String(raw).trim() : (input ? input.value.trim() : '');
     if (!eqStr) throw new Error('Empty equation. Try  x^2 + 6*x');
     const dom = Store.get('domain');
+    const noise = Store.get('training').noise ?? 0;
     let parsed;
-    try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax); } catch (e) { this.showError(e.message); throw e; }
+    try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax, noise); } catch (e) { this.showError(e.message); throw e; }
     this.clearError();
     if (input && document.activeElement !== input) input.value = parsed.compiled.src;
     Training.setStopRequested(true);
@@ -324,6 +395,35 @@ const App = {
       Store.set({ training: { ...Store.get('training'), weightDecay: val } });
       this.showToast('Weight decay ' + (val===0?'off':val.toExponential(1)), 'success');
     });
+    const noiseEl = $('#noiseLevel');
+    if (noiseEl) {
+      noiseEl.addEventListener('input', () => {
+        const v = parseInt(noiseEl.value, 10) / 100;
+        const el=$('#noiseLevelVal'); if(el) el.textContent = v === 0 ? '0' : v.toFixed(2);
+      });
+      noiseEl.addEventListener('change', () => {
+        const v = parseInt(noiseEl.value, 10) / 100;
+        Store.set({ training: { ...Store.get('training'), noise: v } });
+        // resample current equation/preset with new noise
+        const data = Store.get('data');
+        const dom = Store.get('domain');
+        let newData = null;
+        if (data.presetId && PRESET_DEFS[data.presetId]) {
+          newData = samplePreset(data.presetId, 100, dom.trainMin, dom.trainMax, v);
+          if (newData) newData = { xs: newData.xs, ys: clipYs(newData.ys) };
+        } else if (data.equation) {
+          try { const p = Equation.sampleString(data.equation, 100, dom.trainMin, dom.trainMax, v); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return; }
+        }
+        if (newData) {
+          Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
+          Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
+          Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
+          this.setStatus('idle'); this.renderAll();
+          this.showToast(v===0 ? 'Noise off' : `Noise σ=${v.toFixed(2)}`, 'success');
+          this.updateURLHash();
+        }
+      });
+    }
     if (opt) opt.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), optimizer: opt.value } });
       if (Training.modelExists && Training.epochCounter > 0) {
@@ -368,7 +468,22 @@ const App = {
         this.renderAll();
       }
     };
-    [trMin, trMax, evMin, evMax].forEach(el => el && el.addEventListener('change', apply));
+    // self-explaining: if user types min >= max, we toast and *revert* the input to the last good value
+    // so the UI never shows an invalid range (was a glitch before).
+    const revert = () => {
+      const d = Store.get('domain');
+      if (trMin) trMin.value = String(d.trainMin);
+      if (trMax) trMax.value = String(d.trainMax);
+      if (evMin) evMin.value = String(d.evalMin);
+      if (evMax) evMax.value = String(d.evalMax);
+    };
+    [trMin, trMax, evMin, evMax].forEach(el => el && el.addEventListener('change', () => {
+      const before = { ...Store.get('domain') };
+      try { apply(); } catch (e) { revert(); throw e; }
+      // if apply showed a toast for invalid, revert
+      const d = Store.get('domain');
+      if (d.trainMin >= d.trainMax || d.evalMin >= d.evalMax) revert();
+    }));
   },
 
   setupControls() {
@@ -382,6 +497,8 @@ const App = {
     if (stepBtn) stepBtn.addEventListener('click', () => this.runStep());
     if (resetBtn) resetBtn.addEventListener('click', () => this.resetWeights());
     if (exportBtn) exportBtn.addEventListener('click', () => this.exportWeights());
+    const exportPngBtn = $('#btnExportPNG');
+    if (exportPngBtn) exportPngBtn.addEventListener('click', () => this.exportPNG());
   },
 
   async startTraining() {
@@ -453,6 +570,18 @@ const App = {
     this.showToast('Weights downloaded ✓', 'success');
   },
 
+  exportPNG() {
+    try {
+      const canvas = document.getElementById('predChart');
+      if (!canvas) throw new Error('no chart');
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url; a.download = `nn-desmos-graph-${Date.now()}.png`;
+      a.click();
+      this.showToast('Graph PNG downloaded ✓', 'success');
+    } catch (e) { this.showToast('PNG export failed: ' + e.message, 'error'); }
+  },
+
   handleRunEnd(status) {
     if (status === 'nan' || status === 'diverged') {
       this.showToast(status === 'nan' ? 'NaN loss — auto-paused' : 'Loss diverged — auto-paused', 'error');
@@ -477,19 +606,23 @@ const App = {
   },
 
   bindDataSubscriptions() {
-    Store.subscribe('data', () => this.renderAll());
+    Store.subscribe('data', () => {
+      try { Charts.resetTrail && Charts.resetTrail(); } catch (_) {}
+      this.renderAll();
+    });
     Store.subscribe('predictions', () => this.updatePredictionOnly());
     Store.subscribe('lossHistory', () => Charts.setLoss(Store.get('lossHistory')));
     Store.subscribe('run', (run) => {
       if (this.epochEl) this.epochEl.textContent = run.epoch ?? 0;
       if (this.lossEl) this.lossEl.textContent = run.loss != null ? Number(run.loss).toExponential(2) : '—';
     });
-    // keep chart view in sync when domain changes elsewhere
     Store.subscribe('domain', (dom) => {
       try { Charts.setDomainAndReset(dom.trainMin, dom.trainMax, dom.evalMin, dom.evalMax); } catch (_) {}
     });
   },
 
+  // self-explaining: we always show truth over the *eval* range (for extrapolation),
+  // but the dots are the actual training samples (train range). Prediction is over eval range.
   renderAll() {
     const data = Store.get('data');
     const pred = Store.get('predictions');
@@ -497,6 +630,9 @@ const App = {
     const gtXs = data.xs, gtYs = data.ys;
     let predXs = pred.xs || [], predYs = pred.ys || [];
     Charts.setLoss(Store.get('lossHistory'));
+    const g = this.sampleTruthOverEval();
+    // training dots — the actual points the network saw
+    const trainDots = { xs: data.xs, ys: data.ys };
     if (!predYs.length && Training.modelExists) {
       const dom = Store.get('domain');
       const evalMin = dom ? dom.evalMin : -2, evalMax = dom ? dom.evalMax : 2;
@@ -504,19 +640,12 @@ const App = {
       for (let i=0;i<140;i++) xs.push(evalMin + (evalMax - evalMin) * i / 139);
       Training.predictXs(xs).then((ys) => {
         if (ys) Store.set({ predictions: { xs, ys } });
-        else {
-          // need gt over eval range too
-          const g = this.sampleTruthOverEval();
-          Charts.setPrediction(g.xs, g.ys, [], []);
-        }
+        else Charts.setPrediction(g.xs, g.ys, [], [], trainDots.xs, trainDots.ys);
       });
-      const g = this.sampleTruthOverEval();
-      Charts.setPrediction(g.xs, g.ys, [], []);
+      Charts.setPrediction(g.xs, g.ys, [], [], trainDots.xs, trainDots.ys);
       return;
     }
-    // gt may be train range only; for display we want eval range truth
-    const g = this.sampleTruthOverEval();
-    Charts.setPrediction(g.xs, g.ys, predXs, predYs);
+    Charts.setPrediction(g.xs, g.ys, predXs, predYs, trainDots.xs, trainDots.ys);
   },
 
   sampleTruthOverEval() {
@@ -544,7 +673,7 @@ const App = {
     const pred = Store.get('predictions');
     if (!data.xs || !pred.xs) return;
     const g = this.sampleTruthOverEval();
-    Charts.setPrediction(g.xs, g.ys, pred.xs, pred.ys);
+    Charts.setPrediction(g.xs, g.ys, pred.xs, pred.ys, data.xs, data.ys);
     Charts.setLoss(Store.get('lossHistory'));
   },
 

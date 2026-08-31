@@ -73,7 +73,8 @@
     <button id="btnPause" type="button">⏸ Pause</button>
     <button id="btnStep" type="button">↷ Step</button>
     <button id="btnResetWeights" type="button">↺ Reset</button>
-    <button id="btnExport" type="button" title="Download weights & biases as JSON">⤓ Export</button>
+    <button id="btnExport" type="button" title="Download weights &amp; biases as JSON">⤓ JSON</button>
+    <button id="btnExportPNG" type="button" title="Download graph as PNG">🖼 PNG</button>
   </div>
 
   <!-- Loss — secondary, smaller -->
@@ -180,6 +181,13 @@
         <span class="control">
           <input type="range" id="weightDecay" min="0" max="100" step="1" value="0">
           <b class="val mono" id="weightDecayVal">0</b>
+        </span>
+      </div>
+      <div class="row">
+        <div><b>Noise</b><small>Gaussian σ 0–0.3</small></div>
+        <span class="control">
+          <input type="range" id="noiseLevel" min="0" max="30" step="1" value="0">
+          <b class="val mono" id="noiseLevelVal">0</b>
         </span>
       </div>
       <div class="row">

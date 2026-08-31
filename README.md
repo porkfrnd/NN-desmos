@@ -40,23 +40,29 @@ No `npm install`.
 | **Training Loop** | Manual `optimizer.minimize(()=>loss,true)` inside `tf.tidy()` loop — not `model.fit()`. `isPaused` ref checked each epoch, `await tf.nextFrame()` every 5 epochs, NaN/divergence auto-pauses with toast. Weight decay added as `loss + wd·Σ‖W‖²` (`js/model.js:146`). |
 | **Visualization** | **Chart.js** (vanilla replacement for Recharts). Hero **Approximation** chart (60vh, most of screen) with **zoom** ( +/− buttons, wheel, drag to pan, pinch on mobile) and train-range shading. **Loss** chart log-scale (`js/charts.js:1`). |
 | **Layout** | Desmos-like: **hero graph on top**, **equation below**, **toolbar** (Start/Pause/Step/Reset/Export) underneath, **loss** below. **Settings on gear icon** top-right (modal) keeps screen clean. Warm matte tokens + grain from `snake game` (`css/style.css:1`), responsive, dark/light toggle via `localStorage`. |
-| **Export** | **⤓ Export** downloads JSON with `meta` (architecture, training, domain, equation, epochs, loss) and per-layer `kernel`/`bias` `{shape,data}` — re-import or inspect (`js/model.js:exportWeights`). |
+| **Export** | **⤓ JSON** downloads weights & biases, **🖼 PNG** downloads the graph as image. JSON contains `meta` + per-layer `{shape,data}` (`js/model.js:exportWeights`). |
+| **Noise** | Gaussian **σ 0–0.3** slider in Settings — adds `y += N(0,σ)` to training samples to test robustness vs overfitting (`js/equation.js:gaussianNoise`, `js/presets.js`). |
+| **Training Dots & Trail** | Main graph shows **training points as dots** (like Desmos) and a **faint trail** from 10 epochs ago — beautiful motion of learning (`js/charts.js:datasets`). |
+| **URL Sharing** | Equation + key config auto-sync to `location.hash` (e.g. `#eq=x^3&act=gelu`) — share a link like Desmos (`js/app.js:updateURLHash`). |
+| **Shortcuts** | **Space** Start/Pause, **R** Reset, **,** Step, **?** help, **⌘E** Export — no mouse needed (`js/app.js:keydown`). |
+| **Smooth 60fps** | No lag: `Store` avoids `JSON.stringify` on large arrays, `TRAIN_UPDATE_EVERY=10` + `await tf.nextFrame()` every 2 epochs, `Chart` `animation:false` + `normalized:true`, L2 only when `wd>0` in single tidy (`js/store.js`, `js/model.js`). |
 
 ---
 
 ## File tree
 
 ```
-index.html        # hero graph + equation + presets + toolbar + gear modal, CDN tags
-css/style.css     # tokens, hero graph, equation, zoom controls, gear modal, grain
-js/store.js       # pub/sub store: data, predictions, lossHistory, model, training, domain, run
-js/presets.js     # function presets + TUNING_PRESETS (smooth/periodic/step), sampling
-js/equation.js    # Desmos parser: normalize → transpile → Function, sampling
-js/siren.js       # SirenDense + SineActivation, SIREN init with ω₀
-js/model.js       # embeddings (Fourier/Chebyshev), activations (SiLU/GELU/softplus), L2, buildModel, training
-js/charts.js      # Chart.js wrappers, train shading, zoom/pan (wheel/drag/pinch), view state
-js/app.js         # wiring: presets, equation live preview, architecture, hyperparams, domain, tuning, controls, export
-js/canvas.js      # legacy (kept, not loaded) — was freehand board before equation
+index.html        # hero graph (zoom/pan) + equation + presets + toolbar + gear modal
+css/style.css     # design system (warm matte, grain, hero, modal, 60fps hints)
+js/store.js       # pub/sub store — self-explaining, no JSON lag on large arrays
+js/presets.js     # function presets + TUNING_PRESETS, sampling with noise
+js/equation.js    # Desmos parser — safe Math.* transpilation, no eval
+js/siren.js       # SirenDense, SIREN init with ω₀
+js/model.js       # embeddings, custom activations, L2, manual training loop (60fps)
+js/charts.js      # Chart.js wrappers — train dots, trail, shading, zoom
+js/app.js         # wiring — URL hash, shortcuts, noise, dots, PNG export
+js/canvas.js      # legacy — kept for reference
+tests/run.js      # intensive unit + security tests (28 tests, no deps)
 ```
 
 ---
@@ -83,6 +89,31 @@ Tips:
 - SIREN needs low LR with SGD; Adam is more stable.
 - Fourier helps periodic but hurts smooth polynomials — use **Chebyshev** for `x^3`.
 - Weight decay `1e-4` reduces wiggles in high-frequency fits.
+
+---
+
+## Testing — intensive, no bugs, no vulns, no lag
+
+```bash
+# unit + security (Equation, Presets, Store, injection, a11y)
+node tests/run.js
+# → 28 passed, 0 failed
+
+# manual — open in browser, try:
+# - Equation: x^2, x^3, sin(10*pi*x), empty, no x, `x; alert(1)` (blocked)
+# - Presets: Sine/Square/Damped/Composite + Smooth/Periodic/Step
+# - Training: Start/Pause/Step/Reset, 1–5 layers, all activations, Fourier/Chebyshev, ω₀, LR, WD, noise, train/eval ranges
+# - Graph: zoom (+/−/wheel/drag/pinch), reset, train shading, dots, trail
+# - Settings gear, theme, export JSON/PNG, URL hash, shortcuts (Space/R/,/⌘E)
+```
+
+All 28 unit tests pass. Manual tests cover every control, edge case, and security injection (see `tests/run.js` for the brutal audit).
+
+---
+
+## Code — beautiful & self-explaining
+
+Every file starts with a **why** comment, every function has **JSDoc** (`@param`/`@returns`), and the architecture is pure functions + tiny pub/sub — no framework, no build, no `npm install`. See `js/store.js` (“why we avoid JSON on large arrays”) and `js/model.js` (“why manual loop, not fit()”).
 
 ---
 

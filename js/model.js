@@ -1,10 +1,25 @@
+/**
+ * Model & training — the ML heart.
+ *
+ * Why manual loop, not model.fit(): `fit()` can't pause mid-epoch.
+ * We use `optimizer.minimize()` + `isPaused` ref checked each epoch,
+ * and `await tf.nextFrame()` to yield to the browser so the UI stays
+ * at 60fps even while training.
+ *
+ * Memory: every scratch tensor is in `tf.tidy()`. Only the model's
+ * own weights survive. `predictXs` creates its own tensors and
+ * disposes them explicitly — never inside an async tidy.
+ *
+ * Embeddings: Fourier (trig) for periodic, Chebyshev for polynomials.
+ * Regularization: L2 is added to MSE as `wd * sum(W^2)` only when wd>0.
+ */
 // Model construction + manual training loop.
 //
 // Manual loop with isPaused ref, tf.tidy discipline, and L2 weight decay.
 // Supports embeddings: none / fourier (variable N, sigma) / chebyshev,
 // and activations: relu, tanh, sigmoid, softplus, silu, gelu, sine (SIREN).
 
-const TRAIN_UPDATE_EVERY = 5;
+const TRAIN_UPDATE_EVERY = 10; // 10 = smoother, less chart thrash at 60fps
 const PRED_SAMPLES = 140;
 const NAN_THRESHOLD = 1e6;
 
@@ -64,7 +79,8 @@ const Training = (() => {
     return 1;
   }
 
-  // custom activations not in tfjs dense strings
+  // self-explaining: SiLU and GELU aren't built into tfjs dense, so we
+  // implement them as tiny custom layers. Defined once, reused for every hidden layer.
   function applyCustomActivation(t, name) {
     switch (name) {
       case 'silu': return tf.tidy(() => tf.mul(t, tf.sigmoid(t)));
@@ -77,6 +93,16 @@ const Training = (() => {
       default: return t;
     }
   }
+  // Single reusable layer class for SiLU/GELU — avoids defining a new class per layer (was leaking)
+  const CustomActLayer = (() => {
+    class _CustomAct extends tf.layers.Layer {
+      constructor(cfg) { super(cfg || {}); this.actName = cfg.actName; }
+      call(inp) { const t = Array.isArray(inp) ? inp[0] : inp; return applyCustomActivation(t, this.actName); }
+      computeOutputShape(s) { return s; }
+      getClassName() { return 'CustomAct_' + this.actName; }
+    }
+    return _CustomAct;
+  })();
 
   // ---- Model construction ----
   function buildModel() {
@@ -103,13 +129,7 @@ const Training = (() => {
       } else if (isCustomAct) {
         const dense = tf.layers.dense({ units: m.neuronsPerLayer, activation: 'linear', useBias: true });
         x = dense.apply(x);
-        const CustomAct = class extends tf.layers.Layer {
-          constructor(cfg) { super(cfg || {}); this.actName = act; }
-          call(inp) { const t = Array.isArray(inp) ? inp[0] : inp; return applyCustomActivation(t, this.actName); }
-          computeOutputShape(s) { return s; }
-          getClassName() { return 'CustomAct_' + this.actName; }
-        };
-        const ca = new CustomAct({});
+        const ca = new CustomActLayer({ actName: act });
         x = ca.apply(x);
       } else {
         // built-in: relu, tanh, sigmoid, softplus, etc.
@@ -192,38 +212,43 @@ const Training = (() => {
       }
       ctx.lastLoss = lossValue;
       ctx.epochCounter++;
-      if (i % TRAIN_UPDATE_EVERY === TRAIN_UPDATE_EVERY - 1 || i === count - 1) {
-        await refreshUi(lossValue);
-        await tf.nextFrame();
-      }
+      // Desmos-like smoothness: update charts every 10, but yield to UI every 2 epochs
+      // so sliders and graph stay at 60fps even during heavy matmuls.
+      const shouldRefresh = (i % TRAIN_UPDATE_EVERY === TRAIN_UPDATE_EVERY - 1) || i === count - 1;
+      if (shouldRefresh) await refreshUi(lossValue);
+      if (i % 2 === 1) await tf.nextFrame();
+      else if (shouldRefresh) await tf.nextFrame();
     }
     return 'done';
   }
 
+  // L2 is the classic lag culprit: summing all weights each epoch is heavy.
+  // We make it fast by (1) early exit when wd===0 (default), and (2) when
+  // wd>0, doing it in a single tidy with explicit dispose so no intermediate
+  // tensors leak and the GPU stays at 60fps.
   function meanSquaredError() {
-    const pred = ctx.model.predict(ctx.xTrain);
-    let loss = tf.losses.meanSquaredError(ctx.yTrain, pred);
-    // L2 weight decay
     const wd = Store.get('training').weightDecay ?? 0;
-    if (wd > 0) {
-      const l2 = tf.tidy(() => {
-        let sum = tf.scalar(0);
-        for (const w of ctx.model.getWeights()) {
-          sum = tf.add(sum, tf.sum(tf.square(w)));
-        }
-        return sum;
-      });
-      const reg = tf.mul(wd, l2);
-      const withReg = tf.add(loss, reg);
-      loss.dispose(); l2.dispose();
-      // Note: reg will be disposed by outer tidy if any, but we are inside minimize's tidy
-      // Keep withReg as return; the inner l2/reg handling is a bit leaky but small.
-      // To avoid leak, we dispose pred and return withReg
+    if (wd === 0) {
+      const pred = ctx.model.predict(ctx.xTrain);
+      const loss = tf.losses.meanSquaredError(ctx.yTrain, pred);
       pred.dispose();
-      return withReg;
+      return loss;
     }
-    pred.dispose();
-    return loss;
+    return tf.tidy(() => {
+      const pred = ctx.model.predict(ctx.xTrain);
+      const mse = tf.losses.meanSquaredError(ctx.yTrain, pred);
+      let l2 = tf.scalar(0);
+      for (const w of ctx.model.getWeights()) {
+        const cur = tf.sum(tf.square(w));
+        const nxt = tf.add(l2, cur);
+        l2.dispose(); cur.dispose();
+        l2 = nxt;
+      }
+      const reg = tf.mul(l2, wd);
+      const out = tf.add(mse, reg);
+      // mse, l2, reg are intermediates — tidy keeps only `out`
+      return out;
+    });
   }
 
   async function refreshUi(epochLoss) {

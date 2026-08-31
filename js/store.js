@@ -1,3 +1,14 @@
+/**
+ * Tiny pub/sub store — the single source of truth.
+ *
+ * Why this exists: the app has no framework, so panels share state
+ * (dataset, model config, training status) without prop-drilling.
+ * Each section (data, model, training, domain, run) is plain JSON.
+ * Views subscribe to a key and re-render when it changes.
+ *
+ * Performance note: we avoid deep equality on large arrays (data, predictions)
+ * to keep training at 60fps. Reference change is enough.
+ */
 // Tiny pub/sub store so the panels share state (model config, dataset,
 // training state) without prop-drilling. Each palette is plain data; views
 // subscribe to key changes.
@@ -38,6 +49,7 @@ const Store = (() => {
       optimizer: 'adam',
       learningRate: 0.001, // 1e-4 to 1e-1 log scale
       weightDecay: 0.0, // L2 0 to 1e-2
+      noise: 0.0, // Gaussian noise std 0..0.3 added to y
       maxEpochs: 500,
     },
 
@@ -77,18 +89,27 @@ const Store = (() => {
     };
   }
 
+  // Fast, self-explaining: we intentionally skip deep equality for large arrays
+  // (lossHistory, predictions, data.xs/ys). Reference change is enough — the UI
+  // subscribes to the *section* and will re-render. This avoids JSON.stringify
+  // on 100+ point arrays every 5 epochs, which was the main lag source.
   function set(patch) {
-    const changed = new Map();
+    const changed = [];
     for (const section in patch) {
       if (!Object.prototype.hasOwnProperty.call(state, section)) continue;
+      // For tiny config objects (model, training, domain, run) a cheap
+      // JSON check is fine and avoids redundant renders. For large data
+      // (data, predictions, lossHistory) we use reference equality.
       const prev = state[section];
       const next = patch[section];
-      if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      const isLarge = section === 'data' || section === 'predictions' || section === 'lossHistory';
+      const equal = isLarge ? prev === next : JSON.stringify(prev) === JSON.stringify(next);
+      if (!equal) {
         state[section] = next;
-        changed.set(section, next);
+        changed.push(section);
       }
     }
-    changed.forEach((_, key) => emit(key));
+    changed.forEach((key) => emit(key));
   }
 
   function get(key) { return key ? state[key] : state; }

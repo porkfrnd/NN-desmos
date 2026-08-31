@@ -72,7 +72,14 @@ const TUNING_PRESETS = {
 const DOMAIN_MIN = -1;
 const DOMAIN_MAX = 1;
 
-function samplePreset(id, count = 100, trainMin = DOMAIN_MIN, trainMax = DOMAIN_MAX) {
+function gaussianNoise(std) {
+  if (std <= 0) return 0;
+  let u=0, v=0;
+  while(u===0) u=Math.random();
+  while(v===0) v=Math.random();
+  return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v) * std;
+}
+function samplePreset(id, count = 100, trainMin = DOMAIN_MIN, trainMax = DOMAIN_MAX, noiseStd = 0) {
   const def = PRESET_DEFS[id];
   if (!def || !def.fn) return null;
   const xs = [], ys = [];
@@ -80,7 +87,9 @@ function samplePreset(id, count = 100, trainMin = DOMAIN_MIN, trainMax = DOMAIN_
     const t = count === 1 ? 0 : i / (count - 1);
     const x = trainMin + (trainMax - trainMin) * t;
     xs.push(x);
-    ys.push(def.fn(x));
+    let y = def.fn(x);
+    if (noiseStd > 0) y += gaussianNoise(noiseStd);
+    ys.push(y);
   }
   return { xs, ys };
 }

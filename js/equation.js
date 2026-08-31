@@ -1,3 +1,14 @@
+/**
+ * Equation parser — Desmos-like, safe, self-explaining.
+ *
+ * Why not eval: user input is transpiled to a safe `Math.*` expression
+ * and built with `new Function('x', ...)` in a sandbox with only `x` and `Math`.
+ * We block `;`, `constructor`, backticks, etc., via an allow-list and throw
+ * on any unknown char. Supports `y=`, unicode `²π`, implicit `2x`, `^` → `**`, `pi`/`e`.
+ *
+ * Sampling respects the *training* range (not fixed [-1,1]) and optional
+ * Gaussian noise for robustness tests.
+ */
 // Equation parser — Desmos-like: y = x^2 + 6*x, sin(2*pi*x), etc.
 // Turns user string into a JS function f(x) over x ∈ [-1,1].
 // No eval on raw input — we transpile to a safe Math.* expression and
@@ -38,7 +49,8 @@ const Equation = (() => {
     // also 3sin -> 3*sin  — but only when not part of a longer name
     s = s.replace(/(\d)\s*(?=[a-zA-Z\(])/g, '$1*');
     s = s.replace(/(\))\s*(?=[a-zA-Z0-9\(])/g, '$1*');
-    s = s.replace(/\bpi\b/gi, 'Math.PI');
+    // avoid double-replacing if user already typed Math.PI
+    s = s.replace(/(?<!Math\.)\bpi\b/gi, 'Math.PI');
     // e as constant: standalone e not part of exp/sqrt etc.
     s = s.replace(/(?<![a-zA-Z0-9_])e(?![a-zA-Z0-9_])/g, 'Math.E');
 
@@ -87,7 +99,15 @@ const Equation = (() => {
     return { fn, expr, src: normalize(src) };
   }
 
-  function sample(compiled, count = 100, trainMin = -1, trainMax = 1) {
+  // self-explaining: Gaussian noise via Box-Muller, added only if training.noise > 0
+  function gaussianNoise(std) {
+    if (std <= 0) return 0;
+    let u=0, v=0;
+    while(u===0) u=Math.random();
+    while(v===0) v=Math.random();
+    return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v) * std;
+  }
+  function sample(compiled, count = 100, trainMin = -1, trainMax = 1, noiseStd = 0) {
     const fn = compiled.fn;
     const xs = [], ys = [];
     for (let i = 0; i < count; i++) {
@@ -95,15 +115,16 @@ const Equation = (() => {
       let y;
       try { y = fn(x); } catch (_) { y = NaN; }
       if (!isFinite(y)) y = Math.sign(y || 0) * 1.5;
+      else if (noiseStd > 0) y += gaussianNoise(noiseStd);
       xs.push(x);
       ys.push(y);
     }
     return { xs, ys: clipYs(ys) };
   }
 
-  function sampleString(src, count = 100, trainMin = -1, trainMax = 1) {
+  function sampleString(src, count = 100, trainMin = -1, trainMax = 1, noiseStd = 0) {
     const c = compile(src);
-    return { compiled: c, ...sample(c, count, trainMin, trainMax) };
+    return { compiled: c, ...sample(c, count, trainMin, trainMax, noiseStd) };
   }
 
   return { normalize, transpile, compile, sample, sampleString };
