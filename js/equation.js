@@ -46,8 +46,9 @@ const Equation = (() => {
     s = s.replace(/\^/g, '**');
 
     // implicit multiplication: 2x -> 2*x, 2pi -> 2*pi, )x -> )*x, )( -> )*(
-    // also 3sin -> 3*sin  — but only when not part of a longer name
-    s = s.replace(/(\d)\s*(?=[a-zA-Z\(])/g, '$1*');
+    // also 3sin -> 3*sin — but only when not part of a longer name.
+    // Must NOT break scientific notation like 1e-3 (so 1e-3 stays 1e-3, not 1*e-3).
+    s = s.replace(/(\d)\s*(?=(?![eE][-+]?\d)[a-zA-Z\(])/g, '$1*');
     s = s.replace(/(\))\s*(?=[a-zA-Z0-9\(])/g, '$1*');
     // avoid double-replacing if user already typed Math.PI
     s = s.replace(/(?<!Math\.)\bpi\b/gi, 'Math.PI');
@@ -62,14 +63,11 @@ const Equation = (() => {
       s = s.replace(re, FN_MAP[k]);
     }
 
-    // allow only safe chars after transpilation
-    // digits, x, operators, parens, comma, dot, *, Math., PI, E
-    const allowed = /^[0-9x+\-*/%()., \t*MathPIE]+$/;
-    // quick check: strip Math.PI / Math.E / Math.xxx, then test remainder
+    // allow only safe chars after transpilation — strip Math.* then check remainder
+    // include e/E for scientific notation like 1e-3
     const stripped = s.replace(/Math\.(PI|E|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|exp|log|sqrt|abs|sign|ceil|floor|round|pow|max|min)/g, '');
-    if (!/^[0-9x+\-*/%()., \t*]+$/.test(stripped)) {
-      // collect offending chars for a nicer error
-      const bad = stripped.match(/[^0-9x+\-*/%()., \t*]/g);
+    if (!/^[0-9x+\-*/%()., \t*eE]+$/.test(stripped)) {
+      const bad = stripped.match(/[^0-9x+\-*/%()., \t*eE]/g);
       if (bad) throw new Error('Invalid characters: ' + [...new Set(bad)].join(' '));
     }
 
@@ -87,14 +85,10 @@ const Equation = (() => {
     } catch (e) {
       throw new Error('Could not parse equation: ' + e.message);
     }
-    // smoke test
+    // smoke test — just ensure it doesn't throw for a few sample points;
+    // non-finite values are allowed (e.g. 1/(x-1) at x=1) and handled at sample time
     for (const x of [-1, 0, 0.5, 1]) {
-      let y;
-      try { y = fn(x); } catch (e) { throw new Error('Error at x=' + x + ': ' + e.message); }
-      if (typeof y !== 'number' || !isFinite(y)) {
-        // allow a few non-finite at edges (e.g. 1/(x-1) at x=1) but not all
-        continue;
-      }
+      try { fn(x); } catch (e) { throw new Error('Error at x=' + x + ': ' + e.message); }
     }
     return { fn, expr, src: normalize(src) };
   }
@@ -114,12 +108,18 @@ const Equation = (() => {
       const x = trainMin + (trainMax - trainMin) * i / (count - 1);
       let y;
       try { y = fn(x); } catch (_) { y = NaN; }
-      if (!isFinite(y)) y = Math.sign(y || 0) * 1.5;
-      else if (noiseStd > 0) y += gaussianNoise(noiseStd);
+      if (!isFinite(y)) {
+        // explicit NaN handling: leave a gap in the chart (null) instead of a fake 0
+        if (Number.isNaN(y)) y = null;
+        else y = Math.sign(y) * 1.5;
+      } else if (noiseStd > 0) {
+        y += gaussianNoise(noiseStd);
+      }
       xs.push(x);
       ys.push(y);
     }
-    return { xs, ys: clipYs(ys) };
+    // clip, but preserve null gaps
+    return { xs, ys: ys.map(v => v === null ? null : Math.max(-1.5, Math.min(1.5, v))) };
   }
 
   function sampleString(src, count = 100, trainMin = -1, trainMax = 1, noiseStd = 0) {

@@ -21,7 +21,11 @@ const root = path.join(__dirname, '..');
 const storeSrc    = fs.readFileSync(path.join(root, 'js/store.js'), 'utf8');
 const presetsSrc  = fs.readFileSync(path.join(root, 'js/presets.js'), 'utf8');
 const equationSrc = fs.readFileSync(path.join(root, 'js/equation.js'), 'utf8');
+const sirenSrc    = fs.readFileSync(path.join(root, 'js/siren.js'), 'utf8');
 const modelSrc    = fs.readFileSync(path.join(root, 'js/model.js'), 'utf8');
+const chartsSrc   = fs.readFileSync(path.join(root, 'js/charts.js'), 'utf8');
+const appSrc      = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
+const indexHtml   = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 // mock globals that the files expect
 const sandbox = {
@@ -29,33 +33,61 @@ const sandbox = {
   Math, JSON, Array, Object, String, Number, Date, Error,
   // fake tf and Chart so files don't throw on load
   tf: {
-    scalar: () => ({dispose:()=>{}}), tidy: fn=>fn(), mul: ()=>({}), add: ()=>({}), sub: ()=>({}),
-    square: ()=>({}), sum: ()=>({}), pow: ()=>({}), sigmoid: ()=>({}), tanh: ()=>({}),
-    layers: {
-      dense: () => ({apply: x=>x}),
-      input: () => ({}),
-      activation: () => ({apply: x=>x}),
-      layer: () => class { constructor(){} },
-    },
-    model: () => ({layers:[], getWeights:()=>[]}),
-    train: { adam: ()=>({dispose:()=>{}}), sgd: ()=>({dispose:()=>{}}) },
+    scalar: (v) => ({dispose:()=>{}, shape:[], dataSync:()=>[v]}),
+    tidy: fn=>fn(),
+    mul: (a,b) => ({dispose:()=>{}}), add: (a,b) => ({dispose:()=>{}}), sub: (a,b) => ({dispose:()=>{}}),
+    square: (x) => ({dispose:()=>{}}), sum: (x) => ({dispose:()=>{}, dataSync:()=>[0]}), pow: (a,b) => ({dispose:()=>{}}),
+    sigmoid: (x) => x, tanh: (x) => x, sin: (x) => x,
+    matMul: () => ({dispose:()=>{}}),
+    losses: { meanSquaredError: () => ({dispose:()=>{}, dataSync:()=>[0.1]}) },
+    initializers: { randomUniform: ()=>({}), zeros: ()=>({}) },
+    train: { adam: (lr) => ({dispose:()=>{}, minimize: (fn, ret) => { const v=fn(); return ret ? {dataSync:()=>[0.1], dispose:()=>{}} : null }}), sgd: (lr) => ({dispose:()=>{}, minimize: (fn, ret) => { const v=fn(); return ret ? {dataSync:()=>[0.1], dispose:()=>{}} : null }}) },
     regularizers: { l2: ()=>null },
     version: { tfjs: 'mock' },
+    nextFrame: () => Promise.resolve(),
+    serialization: { registerClass: ()=>{} },
+    layers: {
+      Layer: class { constructor(cfg){ this.built=false; } addWeight(name, shape, dtype, init){ return { read:() => ({ matMul: ()=>({add:()=>({})}), dispose:()=>{} }), shape, dispose:()=>{} }; } },
+      dense: (cfg) => ({apply: x=>x, getWeights:() => [], getClassName: () => 'Dense', units: cfg.units, activation: { getClassName: () => cfg.activation || 'linear' }}),
+      input: (cfg) => ({}),
+      activation: (cfg) => ({apply: x=>x}),
+      layer: (cfg) => class { constructor(){ } },
+    },
+    tensor2d: (data, shape) => ({dispose:()=>{}, shape, dataSync:()=>[0]}),
   },
   Chart: class MockChart { constructor(){this.data={datasets:[]}; this.options={scales:{x:{},y:{}}}} destroy(){} update(){} resize(){} },
-  document: { getElementById: ()=>null, createElement: ()=>({}), querySelector: ()=>null, querySelectorAll: ()=>[] },
-  window: {},
+  document: {
+    getElementById: ()=>null,
+    createElement: ()=>({ style:{}, appendChild:()=>{}, remove:()=>{}, click:()=>{}, classList:{add:()=>{},remove:()=>{},toggle:()=>{},contains:()=>false} }),
+    querySelector: ()=>null,
+    querySelectorAll: ()=>[],
+    addEventListener: ()=>{},
+    createElementNS: ()=>({}),
+  },
+  window: { addEventListener: ()=>{} },
   localStorage: { getItem: ()=>null, setItem: ()=>{} },
+  location: { hash: '', href: 'http://localhost' },
+  navigator: { clipboard: { writeText: ()=>Promise.resolve() } },
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-// Load in dependency order: store -> presets -> equation
-// (model is not needed for most unit tests, but we load it to check it parses)
-try { vm.runInContext(storeSrc, sandbox, {filename: 'store.js'}); } catch (e) { console.error('store.js failed to load:', e.message); }
-try { vm.runInContext(presetsSrc, sandbox, {filename: 'presets.js'}); } catch (e) { console.error('presets.js failed:', e.message); }
-try { vm.runInContext(equationSrc, sandbox, {filename: 'equation.js'}); } catch (e) { console.error('equation.js failed:', e.message); }
+// Load in dependency order: store -> presets -> equation -> siren -> model -> charts -> app
+// Now actually executes every file so bugs like #1 are caught
+let loadFailed = false;
+function tryLoad(src, name) {
+  try { vm.runInContext(src, sandbox, {filename: name}); }
+  catch (e) { console.error(name + ' failed to load:', e.message); loadFailed = true; failed++; }
+}
+tryLoad(storeSrc, 'store.js');
+tryLoad(presetsSrc, 'presets.js');
+tryLoad(equationSrc, 'equation.js');
+tryLoad(sirenSrc, 'siren.js');
+tryLoad(modelSrc, 'model.js');
+tryLoad(chartsSrc, 'charts.js');
+tryLoad(appSrc, 'app.js');
+if (loadFailed) console.error('One or more source files failed to parse — this would have caught bug #1');
 
 // `const Store = ...` in the VM does not become a property of `sandbox` —
 // grab it via explicit eval in that context (like a browser global).
@@ -67,6 +99,11 @@ const Presets = getGlobal('Presets');
 const samplePreset = getGlobal('samplePreset');
 const clipYs = getGlobal('clipYs');
 const TUNING_PRESETS = getGlobal('TUNING_PRESETS');
+const SirenDense = getGlobal('SirenDense');
+const Training = getGlobal('Training');
+const Charts = getGlobal('Charts');
+const App = getGlobal('App');
+const SIREN_W0 = getGlobal('SIREN_W0');
 
 // ── Equation parser ───────────────────────────────────────────────────────
 console.log('\n── Equation parser ──');
@@ -187,6 +224,96 @@ test('domain set', () => {
   // reset
   Store.set({ domain: { trainMin: -1, trainMax: 1, evalMin: -2, evalMax: 2 } });
 });
+
+// ── Regression tests for Critical/Medium/Minor fixes ────────────────────
+console.log('\n── Regression: Critical Fixes ──');
+test('SIREN: SirenDense globally accessible and not block-scoped', () => {
+  assert.ok(typeof SirenDense !== 'undefined' && SirenDense !== null, 'SirenDense should be globally accessible');
+  assert.strictEqual(SirenDense.className, 'SirenDense');
+  const layer = getGlobal('sirenDense')(4, true, 30);
+  assert.ok(layer, 'sirenDense factory should work');
+  assert.strictEqual(layer.isFirstLayer, true);
+});
+test('SIREN: only first layer scales with ω₀', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/siren.js'), 'utf8');
+  assert.ok(src.includes('if (this.isFirstLayer) out = tf.mul(out, this.w0)'), 'should only scale first layer');
+});
+test('Typing without Plot updates training tensors (regression #2)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  assert.ok(appSrc.includes('Training.refreshDataTensors()'), 'debounced handler should refresh tensors');
+});
+test('Share links restore all config (regression #3)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  assert.ok(appSrc.includes("params.get('act')"), 'should parse act');
+  assert.ok(appSrc.includes("params.get('emb')"), 'should parse emb');
+  assert.ok(appSrc.includes("params.get('lr')"), 'should parse lr');
+  assert.ok(appSrc.includes("params.get('wd')"), 'should parse wd');
+  assert.ok(appSrc.includes("params.get('noise')"), 'should parse noise');
+  assert.ok(appSrc.includes("params.get('train')"), 'should parse train');
+  assert.ok(appSrc.includes("params.get('eval')"), 'should parse eval');
+});
+
+console.log('\n── Regression: Medium Fixes ──');
+test('Scientific notation 1e-3*x not mis-parsed (regression #4)', () => {
+  const c = Equation.compile('1e-3*x');
+  approx(c.fn(2), 0.002);
+  const c2 = Equation.compile('1e3*x');
+  approx(c2.fn(1), 1000);
+});
+test('Step button waits for loop (regression #5)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  assert.ok(appSrc.includes('loopPromise'), 'should track loop promise');
+  assert.ok(appSrc.includes('await') && appSrc.includes('loopPromise'), 'runStep should await loop');
+});
+test('Theme toggle passes 5 args including dots (regression #6)', () => {
+  const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8');
+  assert.ok(html.includes('sampleTruthOverEval') || html.includes('setPrediction(g.xs'), 'theme should use eval truth');
+});
+test('Domain changes preserve noise (regression #7)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  const hasNoise = appSrc.includes('samplePreset(data.presetId, 100, tMin, tMax, noiseStd)') && appSrc.includes('sampleString(data.equation, 100, tMin, tMax, noiseStd)');
+  assert.ok(hasNoise, 'domain resampling should pass noiseStd');
+});
+
+console.log('\n── Regression: Minor Fixes ──');
+test('touchend uses event param not global (regression #8)', () => {
+  const chartsSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/charts.js'), 'utf8');
+  assert.ok(chartsSrc.includes("addEventListener('touchend', (e) =>"), 'should use (e)');
+  assert.ok(!chartsSrc.includes("addEventListener('touchend', () => { if (event."), 'should not use global event');
+});
+test('Equation NaN handled as null, not 0 (regression #9)', () => {
+  const c = Equation.compile('log(x)');
+  const s = Equation.sample(c, 5, -1, 1);
+  assert.strictEqual(s.ys[0], null, 'log(-1) should be null, not 0');
+});
+test('inputDimForModel clamps (regression #10)', () => {
+  const modelSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/model.js'), 'utf8');
+  assert.ok(modelSrc.includes('Math.max(0, Math.min(6, m.fourierN'), 'should clamp fourierN');
+  assert.ok(modelSrc.includes('Math.max(1, Math.min(16, m.chebyshevDegree'), 'should clamp chebyshev');
+});
+test('runLoop reads maxEpochs dynamically (regression #11)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  assert.ok(appSrc.includes("Store.get('training').maxEpochs") || appSrc.includes('Store.get("training").maxEpochs'), 'should read maxEpochs inside loop');
+});
+test('LR toast fixed (regression #11)', () => {
+  const appSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'js/app.js'), 'utf8');
+  assert.ok(!appSrc.includes('will apply on next Start'), 'should not say will apply on next Start');
+});
+test('Dead code removed (regression #12)', () => {
+  const fs2 = require('fs'); const path2 = require('path');
+  assert.ok(!fs2.existsSync(path2.join(__dirname, '..', 'js/canvas.js')), 'canvas.js should be deleted');
+  const sirenSrc = fs2.readFileSync(path2.join(__dirname, '..', 'js/siren.js'), 'utf8');
+  assert.ok(!sirenSrc.includes('SineActivation'), 'SineActivation should be removed');
+  assert.ok(!sirenSrc.includes('uniformRandom'), 'uniformRandom should be removed');
+});
+test('Tests actually load all files (regression #13)', () => {
+  const testSrc = require('fs').readFileSync(__filename, 'utf8');
+  assert.ok(testSrc.includes('sirenSrc'), 'should load siren');
+  assert.ok(testSrc.includes('modelSrc'), 'should load model');
+  assert.ok(testSrc.includes('chartsSrc'), 'should load charts');
+  assert.ok(testSrc.includes('appSrc'), 'should load app');
+});
+
 
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed`);

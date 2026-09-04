@@ -74,8 +74,14 @@ const Training = (() => {
   function inputDimForModel() {
     const m = Store.get('model');
     const emb = m.embedding || (m.fourierFeatures ? 'fourier' : 'none');
-    if (emb === 'fourier') return 2 * ((m.fourierN ?? 3) + 1);
-    if (emb === 'chebyshev') return (m.chebyshevDegree ?? 6) + 1;
+    if (emb === 'fourier') {
+      const N = Math.max(0, Math.min(6, m.fourierN ?? 3));
+      return 2 * (N + 1);
+    }
+    if (emb === 'chebyshev') {
+      const deg = Math.max(1, Math.min(16, m.chebyshevDegree ?? 6));
+      return deg + 1;
+    }
     return 1;
   }
 
@@ -153,11 +159,13 @@ const Training = (() => {
     const d = Store.get('data');
     if (!d.xs || !d.xs.length) return;
     if (!ctx.featureFn) ctx.featureFn = buildFeatureFn();
-    const rows = d.xs.map((x) => ctx.featureFn(x));
-    const n = rows.length;
-    if (n === 0) return;
-    ctx.xTrain = tf.tensor2d(rows, [n, rows[0].length]);
-    ctx.yTrain = tf.tensor2d(d.ys.map((y) => [y]), [n, 1]);
+    // filter out null/NaN gaps (e.g. log(x) for x<0) — training needs finite values
+    const pts = d.xs.map((x, i) => ({ x, y: d.ys[i] })).filter(p => p.y !== null && Number.isFinite(p.y));
+    if (pts.length === 0) return;
+    const rows = pts.map(p => ctx.featureFn(p.x));
+    const ys = pts.map(p => p.y);
+    ctx.xTrain = tf.tensor2d(rows, [rows.length, rows[0].length]);
+    ctx.yTrain = tf.tensor2d(ys.map(y => [y]), [ys.length, 1]);
   }
 
   function disposeContext() {

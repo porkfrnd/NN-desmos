@@ -288,7 +288,14 @@
           Charts.destroy();
           Charts.init(document.getElementById('predChart'), document.getElementById('lossChart'));
           var d = Store.get('data'), p = Store.get('predictions');
-          if (d && d.xs && d.xs.length) Charts.setPrediction(d.xs, d.ys, p.xs || [], p.ys || []);
+          if (d && d.xs && d.xs.length) {
+            if (window.App && typeof App.sampleTruthOverEval === 'function') {
+              var g = App.sampleTruthOverEval();
+              Charts.setPrediction(g.xs, g.ys, p.xs || [], p.ys || [], d.xs, d.ys);
+            } else {
+              Charts.setPrediction(d.xs, d.ys, p.xs || [], p.ys || [], d.xs, d.ys);
+            }
+          }
           Charts.setLoss(Store.get('lossHistory'));
         }
       } catch (e) {}

@@ -16,6 +16,7 @@ function $all(sel, root) { return Array.from((root || document).querySelectorAll
 
 const App = {
   loopPromise: null,
+  _loopResolve: null,
 
   init() {
     if (typeof tf === 'undefined') {
@@ -97,6 +98,11 @@ const App = {
       params.set('noise', String(tr.noise ?? 0));
       params.set('train', `${dom.trainMin},${dom.trainMax}`);
       params.set('eval', `${dom.evalMin},${dom.evalMax}`);
+      // extra for full restore
+      params.set('fourierN', String(m.fourierN ?? 3));
+      params.set('fourierSigma', String(m.fourierSigma ?? 1));
+      params.set('chebyshevDegree', String(m.chebyshevDegree ?? 6));
+      params.set('omega0', String(m.omega0 ?? 30));
       location.hash = params.toString();
     } catch (_) {}
   },
@@ -105,15 +111,52 @@ const App = {
     try {
       if (!location.hash || location.hash.length < 2) return;
       const params = new URLSearchParams(location.hash.slice(1));
+      // restore model / training / domain before equation so the model is built with correct config
+      const patchModel = {};
+      const patchTraining = {};
+      const patchDomain = {};
+      const act = params.get('act');
+      if (act && ['relu','tanh','sigmoid','softplus','silu','gelu','sine'].includes(act)) patchModel.activation = act;
+      const emb = params.get('emb');
+      if (emb && ['none','fourier','chebyshev'].includes(emb)) patchModel.embedding = emb;
+      const lr = parseFloat(params.get('lr'));
+      if (isFinite(lr) && lr >= 1e-5 && lr <= 0.5) patchTraining.learningRate = lr;
+      const wd = parseFloat(params.get('wd'));
+      if (isFinite(wd) && wd >= 0 && wd <= 0.1) patchTraining.weightDecay = wd;
+      const noise = parseFloat(params.get('noise'));
+      if (isFinite(noise) && noise >= 0 && noise <= 1) patchTraining.noise = noise;
+      const train = params.get('train');
+      if (train) {
+        const [a,b] = train.split(',').map(parseFloat);
+        if (isFinite(a) && isFinite(b) && a < b) { patchDomain.trainMin = a; patchDomain.trainMax = b; }
+      }
+      const evalR = params.get('eval');
+      if (evalR) {
+        const [a,b] = evalR.split(',').map(parseFloat);
+        if (isFinite(a) && isFinite(b) && a < b) { patchDomain.evalMin = a; patchDomain.evalMax = b; }
+      }
+      // also handle legacy fourierN/sigma/cheb/omega if present
+      const fn = parseInt(params.get('fourierN'),10); if (isFinite(fn)) patchModel.fourierN = Math.max(0,Math.min(6,fn));
+      const fs = parseFloat(params.get('fourierSigma')); if (isFinite(fs)) patchModel.fourierSigma = fs;
+      const cd = parseInt(params.get('chebyshevDegree'),10); if (isFinite(cd)) patchModel.chebyshevDegree = cd;
+      const om = parseFloat(params.get('omega0')); if (isFinite(om)) patchModel.omega0 = om;
+
+      if (Object.keys(patchModel).length) Store.set({ model: { ...Store.get('model'), ...patchModel } });
+      if (Object.keys(patchTraining).length) Store.set({ training: { ...Store.get('training'), ...patchTraining } });
+      if (Object.keys(patchDomain).length) Store.set({ domain: { ...Store.get('domain'), ...patchDomain } });
+      this.syncAllUIFromStore();
+
       const eq = params.get('eq');
       const preset = params.get('preset');
       if (eq) {
         const input = document.getElementById('equationInput');
         if (input) input.value = eq;
-        // apply without overwriting hash again immediately
         setTimeout(() => { try { this.applyEquation(eq, preset || null); } catch (_) {} }, 0);
       } else if (preset && PRESET_DEFS[preset]) {
         setTimeout(() => this.loadPreset(preset), 0);
+      } else if (Object.keys(patchModel).length || Object.keys(patchTraining).length || Object.keys(patchDomain).length) {
+        // hash had config but no eq/preset — rebuild with current data
+        try { Training.buildModel(); Training.setDataTensors(); this.renderAll(); } catch (_) {}
       }
     } catch (_) {}
   },
@@ -239,6 +282,10 @@ const App = {
           const noise = Store.get('training').noise ?? 0;
           const parsed = Equation.sampleString(v, 100, dom.trainMin, dom.trainMax, noise);
           Store.set({ data: { source: 'equation', presetId: null, equation: parsed.compiled.src, xs: parsed.xs, ys: parsed.ys } });
+          // critical: keep training tensors in sync so Start trains on what you see
+          if (Training.modelExists) {
+            try { Training.refreshDataTensors(); } catch (_) {}
+          }
           this.renderAll();
           $all('#presetGrid .preset-btn').forEach(b => b.classList.remove('active'));
           this.clearError();
@@ -389,7 +436,7 @@ const App = {
       if (Training.modelExists && Training.epochCounter > 0) {
         if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
         else { Training.buildModel(); Training.setDataTensors(); }
-        this.showToast('Learning rate will apply on next Start', 'success');
+        this.showToast('Learning rate updated', 'success');
       } else { Training.buildModel(); Training.setDataTensors(); }
     });
     if (wd) wd.addEventListener('change', () => {
@@ -433,7 +480,7 @@ const App = {
       if (Training.modelExists && Training.epochCounter > 0) {
         if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
         else { Training.buildModel(); Training.setDataTensors(); }
-        this.showToast('Optimizer will apply on next Start', 'success');
+        this.showToast('Optimizer updated', 'success');
       } else { Training.buildModel(); Training.setDataTensors(); }
     });
     if (epochsRange) epochsRange.addEventListener('change', () => {
@@ -453,12 +500,13 @@ const App = {
       Store.set({ domain: { trainMin: tMin, trainMax: tMax, evalMin: eMin, evalMax: eMax } });
       // resample current equation/preset over new train range and update chart view to new eval range
       const data = Store.get('data');
+      const noiseStd = Store.get('training').noise ?? 0;
       let newData = null;
       if (data.presetId && PRESET_DEFS[data.presetId]) {
-        newData = samplePreset(data.presetId, 100, tMin, tMax);
+        newData = samplePreset(data.presetId, 100, tMin, tMax, noiseStd);
         if (newData) newData = { xs: newData.xs, ys: clipYs(newData.ys) };
       } else if (data.equation) {
-        try { const p = Equation.sampleString(data.equation, 100, tMin, tMax); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return; }
+        try { const p = Equation.sampleString(data.equation, 100, tMin, tMax, noiseStd); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return; }
       }
       if (newData) {
         Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
@@ -509,19 +557,31 @@ const App = {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) { this.showToast('Type an equation and press Plot first', 'warning'); return; }
     if (Store.get('run').status === 'training') return;
-    if (!Training.modelExists) { Training.buildModel(); Training.setDataTensors(); }
+    if (!Training.modelExists) {
+      Training.buildModel();
+      Training.setDataTensors();
+    } else {
+      try { Training.refreshDataTensors(); } catch (_) {}
+    }
     Training.setPaused(false);
     Training.setStopRequested(false);
     this.setStatus('training');
-    // auto-open loss when training starts (it's closed by default now)
     try { const loss = document.getElementById('lossWrap'); if (loss && !loss.open) loss.open = true; } catch (_) {}
-    this.runLoop();
+    // track the loop so runStep can wait for it to actually finish
+    let resolveLoop;
+    this.loopPromise = new Promise(r => { resolveLoop = r; this._loopResolve = r; });
+    try {
+      await this.runLoop();
+    } finally {
+      if (resolveLoop) resolveLoop();
+      this.loopPromise = null;
+      this._loopResolve = null;
+    }
   },
 
   async runLoop() {
-    const cfg = Store.get('training');
-    const target = cfg.maxEpochs;
     while (!Training.stopRequested && !Training.isPaused) {
+      const target = Store.get('training').maxEpochs;
       if (Training.epochCounter >= target) {
         this.setStatus('idle');
         this.showToast('Reached ' + target + ' epochs', 'success');
@@ -548,8 +608,25 @@ const App = {
   async runStep() {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) { this.showToast('Plot an equation first', 'warning'); return; }
+    // robust stop: tell the loop to exit and wait for it to actually finish
     Training.setStopRequested(true);
-    await new Promise(r => setTimeout(r, 60));
+    if (this.loopPromise) {
+      try {
+        // wait for the loop to observe the flag and exit (max 2s)
+        await Promise.race([
+          this.loopPromise,
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000)),
+        ]);
+      } catch (_) {
+        // timeout — force resolve
+        if (this._loopResolve) try { this._loopResolve(); } catch (_) {}
+        this.loopPromise = null;
+        this._loopResolve = null;
+      }
+    } else {
+      // no active loop, but give any in-flight runEpochs chunk a moment to see the flag
+      await new Promise(r => setTimeout(r, 80));
+    }
     Training.setStopRequested(false);
     if (!Training.modelExists) { Training.buildModel(); Training.setDataTensors(); }
     const wasPaused = Training.isPaused;
@@ -557,6 +634,7 @@ const App = {
     Training.setPaused(false); this.setStatus('training');
     const status = await Training.runEpochs(10);
     if (status === 'nan' || status === 'diverged') { this.handleRunEnd(status); return; }
+    // Step always ends paused/idle, never resumes the loop
     Training.setPaused(wasPaused || !wasTraining);
     this.setStatus(wasPaused || !wasTraining ? 'paused' : 'idle');
   },

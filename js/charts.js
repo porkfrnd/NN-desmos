@@ -327,7 +327,7 @@ const Charts = (() => {
         lastPinchDist = dist;
       }
     }, { passive: false });
-    canvas.addEventListener('touchend', () => { if (event.touches && event.touches.length < 2) lastPinchDist = null; });
+    canvas.addEventListener('touchend', (e) => { if (e.touches && e.touches.length < 2) lastPinchDist = null; });
   }
 
   function resetTrail() { prevPred = null; }

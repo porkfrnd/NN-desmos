@@ -1,82 +1,66 @@
-// Custom SIREN (Sinusoidal Representation Network) layer for TensorFlow.js.
-//
-// `sin` is NOT a built-in dense activation in tf.js, and SIREN additionally
-// requires a very specific weight initialization:
-//   - first layer: uniform in ±1/fan_in
-//   - subsequent layers: uniform in ±√(6/fan_in)/ω₀, with ω₀ = 30
-//
-// Without this init, SIREN visibly fails to train (the sine activations stay
-// stuck in flat/linear regions). We provide both a plain sine Activation
-// class (wrapped in a lambda Dense layer) and a custom SIREN Dense layer
-// that bakes in the correct fan_in-based initialization.
+// SIREN layer — correct implementation.
+// sin is not a built-in tfjs activation, and SIREN needs special init:
+// first layer: U(-1/fan_in, 1/fan_in) then sin(ω₀·(Wx+b))
+// deeper layers: U(-√(6/fan_in)/ω₀, √(6/fan_in)/ω₀) then sin(Wx+b)  (no ω₀ scale)
+// ω₀ only scales the first layer — per SIREN paper (Sitzmann et al. 2020).
 
 const SIREN_W0 = 30;
 
-function uniformRandom(min, max) {
-  return () => Math.random() * (max - min) + min;
-}
+// Declare globally so factory can see it even when tf is not yet loaded.
+// We assign conditionally but the binding is top-level.
+let SirenDense = null;
 
-// A tf.js Activation that applies sin(x). Guarded so the page doesn't crash
-// if the tf.js CDN fails to load (shows a friendly error instead).
-if (typeof tf !== 'undefined' && tf.layers && tf.serialization) {
-class SineActivation extends tf.layers.Activation {
-  static className = 'SineActivation';
-  apply(x) {
-    return tf.tidy(() => tf.sin(x));
-  }
-}
-try { tf.serialization.registerClass(SineActivation); } catch (_) {}
-}
-
-// Custom Dense layer with SIREN-style initialization baked into build().
-if (typeof tf !== 'undefined' && tf.layers) {
-class SirenDense extends tf.layers.Layer {
-  static className = 'SirenDense';
-  constructor(config) {
-    super(config);
-    this.units = config.units;
-    this.isFirstLayer = config.isFirstLayer != null ? config.isFirstLayer : false;
-    this.w0 = config.w0 != null ? config.w0 : SIREN_W0;
-    this.useBias = config.useBias != null ? config.useBias : true;
-    this.kernel = null;
-    this.bias = null;
-  }
-  build(inputShape) {
-    const fanIn = inputShape[inputShape.length - 1];
-    const bound = this.isFirstLayer
-      ? 1 / Math.max(1, fanIn)
-      : Math.sqrt(6 / Math.max(1, fanIn)) / this.w0;
-    const kernelInit = tf.initializers.randomUniform({ minval: -bound, maxval: bound });
-    this.kernel = this.addWeight('kernel', [fanIn, this.units], 'float32', kernelInit);
-    if (this.useBias) {
-      this.bias = this.addWeight('bias', [this.units], 'float32', tf.initializers.zeros());
+if (typeof tf !== 'undefined' && tf.layers && tf.layers.Layer) {
+  SirenDense = class extends tf.layers.Layer {
+    static className = 'SirenDense';
+    constructor(config) {
+      super(config);
+      this.units = config.units;
+      this.isFirstLayer = !!config.isFirstLayer;
+      this.w0 = config.w0 != null ? config.w0 : SIREN_W0;
+      this.useBias = config.useBias != null ? config.useBias : true;
+      this.kernel = null;
+      this.bias = null;
     }
-    this.built = true;
-  }
-  call(inputs) {
-    return tf.tidy(() => {
-      const x = Array.isArray(inputs) ? inputs[0] : inputs;
-      let out = x.matMul(this.kernel.read());
-      if (this.bias) out = out.add(this.bias.read());
-      return tf.sin(tf.mul(out, this.w0));
-    });
-  }
-  computeOutputShape(inputShape) {
-    const s = inputShape.slice(); s[s.length - 1] = this.units; return s;
-  }
-  getConfig() {
-    const c = super.getConfig();
-    c.units = this.units; c.isFirstLayer = this.isFirstLayer; c.w0 = this.w0; c.useBias = this.useBias;
-    return c;
-  }
+    build(inputShape) {
+      const fanIn = inputShape[inputShape.length - 1];
+      const bound = this.isFirstLayer
+        ? 1 / Math.max(1, fanIn)
+        : Math.sqrt(6 / Math.max(1, fanIn)) / this.w0;
+      const kernelInit = tf.initializers.randomUniform({ minval: -bound, maxval: bound });
+      this.kernel = this.addWeight('kernel', [fanIn, this.units], 'float32', kernelInit);
+      if (this.useBias) {
+        this.bias = this.addWeight('bias', [this.units], 'float32', tf.initializers.zeros());
+      }
+      this.built = true;
+    }
+    // tfjs Layer overrides call(), not apply()
+    call(inputs) {
+      return tf.tidy(() => {
+        const x = Array.isArray(inputs) ? inputs[0] : inputs;
+        let out = x.matMul(this.kernel.read());
+        if (this.bias) out = out.add(this.bias.read());
+        // ω₀ only on first layer
+        if (this.isFirstLayer) out = tf.mul(out, this.w0);
+        return tf.sin(out);
+      });
+    }
+    computeOutputShape(inputShape) {
+      const s = inputShape.slice(); s[s.length - 1] = this.units; return s;
+    }
+    getConfig() {
+      const c = super.getConfig();
+      c.units = this.units; c.isFirstLayer = this.isFirstLayer; c.w0 = this.w0; c.useBias = this.useBias;
+      return c;
+    }
+  };
+  try { tf.serialization.registerClass(SirenDense); } catch (_) {}
 }
-try { tf.serialization.registerClass(SirenDense); } catch (_) {}
-} // end tf guard
 
 function sirenDense(units, isFirstLayer, w0) {
-  if (typeof SirenDense === 'undefined') {
-    // fallback: regular dense with tanh if tf failed — still usable
+  if (typeof SirenDense === 'undefined' || SirenDense === null) {
+    // graceful fallback if tf failed to load — still trainable
     return tf.layers.dense({ units, activation: 'tanh' });
   }
-  return new SirenDense({ units, w0: w0 != null ? w0 : SIREN_W0, isFirstLayer: !!isFirstLayer });
+  return new SirenDense({ units, isFirstLayer: !!isFirstLayer, w0: w0 != null ? w0 : SIREN_W0 });
 }
