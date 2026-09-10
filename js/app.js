@@ -68,7 +68,7 @@ const App = {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.isContentEditable)) return;
       if (e.code === 'Space') { e.preventDefault(); const s=Store.get('run').status; if(s==='training') this.togglePause(); else this.startTraining(); }
       else if (e.key.toLowerCase() === 'r') { this.resetWeights(); }
-      else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { this.showToast('Shortcuts: Space = Start/Pause, R = Reset, , = Step, E = Export', 'success'); }
+      else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { this.showToast('Shortcuts: Space = Start/Pause · R = Reset · , = Step · Ctrl/Cmd+E = Export', 'success'); }
       else if (e.key === ',') { this.runStep(); }
       else if (e.key.toLowerCase() === 'e' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.exportWeights(); }
     });
@@ -83,37 +83,47 @@ const App = {
   // --- URL hash (shareable links) ---
   updateURLHash() {
     try {
-      const d = Store.get('data');
-      const m = Store.get('model');
-      const tr = Store.get('training');
-      const dom = Store.get('domain');
-      const params = new URLSearchParams();
-      if (d.equation) params.set('eq', d.equation);
-      if (d.presetId) params.set('preset', d.presetId);
-      params.set('act', m.activation);
-      params.set('emb', m.embedding);
-      params.set('lr', String(tr.learningRate));
-      params.set('wd', String(tr.weightDecay));
-      params.set('noise', String(tr.noise ?? 0));
-      params.set('train', `${dom.trainMin},${dom.trainMax}`);
-      params.set('eval', `${dom.evalMin},${dom.evalMax}`);
-      location.hash = params.toString();
+      location.hash = Share.encode({
+        data: Store.get('data'),
+        model: Store.get('model'),
+        training: Store.get('training'),
+        domain: Store.get('domain'),
+      });
     } catch (_) {}
   },
 
   loadFromURLHash() {
     try {
       if (!location.hash || location.hash.length < 2) return;
-      const params = new URLSearchParams(location.hash.slice(1));
-      const eq = params.get('eq');
-      const preset = params.get('preset');
-      if (eq) {
-        const input = document.getElementById('equationInput');
-        if (input) input.value = eq;
-        // apply without overwriting hash again immediately
-        setTimeout(() => { try { this.applyEquation(eq, preset || null); } catch (_) {} }, 0);
-      } else if (preset && PRESET_DEFS[preset]) {
-        setTimeout(() => this.loadPreset(preset), 0);
+      const state = Share.sanitize(Share.decode(location.hash));
+      if (!state) return;
+      // restore the config FIRST so sampling uses the shared domain/noise —
+      // this used to read back only eq/preset, so "look at SIREN nail this"
+      // links opened as a default tanh net
+      const m = Store.get('model'), t = Store.get('training'), d = Store.get('domain');
+      if (Object.keys(state.model).length || Object.keys(state.training).length || state.domain) {
+        Store.set({
+          model: { ...m, ...state.model },
+          training: { ...t, ...state.training },
+          domain: state.domain || d,
+        });
+      }
+      this.syncAllUIFromStore();
+      const eq = state.data.equation, preset = state.data.presetId;
+      if (eq || (preset && PRESET_DEFS[preset])) {
+        setTimeout(() => {
+          try {
+            if (eq) {
+              const input = $('#equationInput');
+              if (input) input.value = eq;
+              this.applyEquation(eq, preset || null);
+            } else {
+              this.loadPreset(preset);
+            }
+          } catch (e) {
+            this.showToast('Shared link had a bad equation — showing the default', 'warning');
+          }
+        }, 0);
       }
     } catch (_) {}
   },
@@ -165,7 +175,7 @@ const App = {
 
   setupCharts() {
     Charts.init(document.getElementById('predChart'), document.getElementById('lossChart'));
-    window.addEventListener('resize', () => Charts.resize());
+    // resize is handled once, debounced, in init() — no second raw listener
   },
 
   setupPresets() {
@@ -226,23 +236,29 @@ const App = {
     };
     btn && btn.addEventListener('click', apply);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
-    let t;
     input.addEventListener('input', () => {
-      clearTimeout(t);
+      clearTimeout(this._eqTimer);
       input.classList.remove('is-error');
       if (errBox) { errBox.hidden = true; errBox.textContent = ''; }
-      t = setTimeout(() => {
+      this._eqTimer = setTimeout(() => {
         const v = input.value.trim();
         if (!v) return;
         try {
           const dom = Store.get('domain');
           const noise = Store.get('training').noise ?? 0;
           const parsed = Equation.sampleString(v, 100, dom.trainMin, dom.trainMax, noise);
+          // live preview while typing: swap in the data the model WILL train on.
+          // refreshDataTensors is the piece that used to be missing — without
+          // it, Start kept training whatever was loaded at the last Plot click
+          // while the graph showed the new curve (loss and curve disagreed).
+          Training.cancelRun();
           Store.set({ data: { source: 'equation', presetId: null, equation: parsed.compiled.src, xs: parsed.xs, ys: parsed.ys } });
-          this.renderAll();
+          Training.refreshDataTensors();
+          Training.resetEpochCounter();
+          Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
           $all('#presetGrid .preset-btn').forEach(b => b.classList.remove('active'));
           this.clearError();
-          this.updateURLHash();
+          if (Store.get('run').status === 'training') this.setStatus('idle');
         } catch (_) { /* silent while typing */ }
       }, 400);
     });
@@ -258,7 +274,8 @@ const App = {
     try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax, noise); } catch (e) { this.showError(e.message); throw e; }
     this.clearError();
     if (input && document.activeElement !== input) input.value = parsed.compiled.src;
-    Training.setStopRequested(true);
+    clearTimeout(this._eqTimer); // Enter/Plot and the preview debounce shouldn't both fire
+    Training.cancelRun();        // retire any live loop before swapping the model under it
     Store.set({ data: { source: presetId ? 'preset' : 'equation', presetId: presetId || null, equation: parsed.compiled.src, xs: parsed.xs, ys: parsed.ys } });
     Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
     $all('#presetGrid .preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === presetId));
@@ -354,7 +371,7 @@ const App = {
   },
 
   resetWeights() {
-    Training.setStopRequested(true);
+    Training.cancelRun();
     Training.buildModel();
     Training.setDataTensors();
     Training.resetEpochCounter();
@@ -385,12 +402,14 @@ const App = {
     if (epochsRange) epochsRange.addEventListener('input', updEp);
 
     lr.addEventListener('change', () => {
-      Store.set({ training: { ...Store.get('training'), learningRate: Math.pow(10, parseFloat(lr.value)) } });
-      if (Training.modelExists && Training.epochCounter > 0) {
-        if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
-        else { Training.buildModel(); Training.setDataTensors(); }
-        this.showToast('Learning rate will apply on next Start', 'success');
-      } else { Training.buildModel(); Training.setDataTensors(); }
+      const v = Math.pow(10, parseFloat(lr.value));
+      Store.set({ training: { ...Store.get('training'), learningRate: v } });
+      if (Training.modelExists) {
+        // tfjs can't hot-swap an Adam lr — fresh optimizer, same weights.
+        // (Applied now; it used to claim "on next Start" while resetting anyway.)
+        Training.rebuildOptimizer();
+        this.showToast('Learning rate ' + v.toExponential(1) + ' — applied (optimizer state reset)', 'success');
+      }
     });
     if (wd) wd.addEventListener('change', () => {
       let raw = parseInt(wd.value, 10);
@@ -419,6 +438,7 @@ const App = {
           try { const p = Equation.sampleString(data.equation, 100, dom.trainMin, dom.trainMax, v); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return; }
         }
         if (newData) {
+          Training.cancelRun();
           Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
           Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
           Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
@@ -430,14 +450,14 @@ const App = {
     }
     if (opt) opt.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), optimizer: opt.value } });
-      if (Training.modelExists && Training.epochCounter > 0) {
-        if (typeof Training.rebuildOptimizer === 'function') Training.rebuildOptimizer();
-        else { Training.buildModel(); Training.setDataTensors(); }
-        this.showToast('Optimizer will apply on next Start', 'success');
-      } else { Training.buildModel(); Training.setDataTensors(); }
+      if (Training.modelExists) {
+        Training.rebuildOptimizer();
+        this.showToast('Optimizer: ' + opt.value + ' — applied (state reset)', 'success');
+      }
     });
     if (epochsRange) epochsRange.addEventListener('change', () => {
       Store.set({ training: { ...Store.get('training'), maxEpochs: parseInt(epochsRange.value, 10) } });
+      this.showToast('Run to ' + epochsRange.value + ' epochs — applies to the live run', 'success');
     });
     updLr(); if(wd) updWd(); if(epochsRange) updEp();
   },
@@ -448,19 +468,21 @@ const App = {
     const apply = () => {
       let tMin = parseFloat(trMin.value), tMax = parseFloat(trMax.value);
       let eMin = parseFloat(evMin.value), eMax = parseFloat(evMax.value);
-      if (!isFinite(tMin) || !isFinite(tMax) || tMin >= tMax) { this.showToast('Training range: min must be < max', 'warning'); return; }
-      if (!isFinite(eMin) || !isFinite(eMax) || eMin >= eMax) { this.showToast('Eval range: min must be < max', 'warning'); return; }
+      if (!isFinite(tMin) || !isFinite(tMax) || tMin >= tMax) { this.showToast('Training range: min must be < max', 'warning'); return false; }
+      if (!isFinite(eMin) || !isFinite(eMax) || eMin >= eMax) { this.showToast('Eval range: min must be < max', 'warning'); return false; }
       Store.set({ domain: { trainMin: tMin, trainMax: tMax, evalMin: eMin, evalMax: eMax } });
       // resample current equation/preset over new train range and update chart view to new eval range
       const data = Store.get('data');
+      const noise = Store.get('training').noise ?? 0; // keep the noise the user set (used to be silently dropped here)
       let newData = null;
       if (data.presetId && PRESET_DEFS[data.presetId]) {
-        newData = samplePreset(data.presetId, 100, tMin, tMax);
+        newData = samplePreset(data.presetId, 100, tMin, tMax, noise);
         if (newData) newData = { xs: newData.xs, ys: clipYs(newData.ys) };
       } else if (data.equation) {
-        try { const p = Equation.sampleString(data.equation, 100, tMin, tMax); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return; }
+        try { const p = Equation.sampleString(data.equation, 100, tMin, tMax, noise); newData = { xs: p.xs, ys: p.ys }; } catch (e) { this.showToast(e.message,'error'); return false; }
       }
       if (newData) {
+        Training.cancelRun();
         Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
         Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
         Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
@@ -471,9 +493,11 @@ const App = {
         try { Charts.setDomainAndReset(tMin, tMax, eMin, eMax); } catch (_) {}
         this.renderAll();
       }
+      return true;
     };
     // self-explaining: if user types min >= max, we toast and *revert* the input to the last good value
-    // so the UI never shows an invalid range (was a glitch before).
+    // so the UI never shows an invalid range (the revert used to check the
+    // store — which was still valid — so the bad text just stayed in the box)
     const revert = () => {
       const d = Store.get('domain');
       if (trMin) trMin.value = String(d.trainMin);
@@ -482,11 +506,9 @@ const App = {
       if (evMax) evMax.value = String(d.evalMax);
     };
     [trMin, trMax, evMin, evMax].forEach(el => el && el.addEventListener('change', () => {
-      const before = { ...Store.get('domain') };
-      try { apply(); } catch (e) { revert(); throw e; }
-      // if apply showed a toast for invalid, revert
-      const d = Store.get('domain');
-      if (d.trainMin >= d.trainMax || d.evalMin >= d.evalMax) revert();
+      let ok = false;
+      try { ok = apply(); } catch (e) { revert(); throw e; }
+      if (!ok) revert();
     }));
   },
 
@@ -508,57 +530,77 @@ const App = {
   async startTraining() {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) { this.showToast('Type an equation and press Plot first', 'warning'); return; }
-    if (Store.get('run').status === 'training') return;
+    if (Store.get('run').status === 'training' && this.loopPromise) return;
+    // retire any straggler loop (paused run, interrupted step) so exactly
+    // one loop ever drives training — the old Step button raced a live loop
+    // and both trained the same model at once
+    if (this.loopPromise) {
+      Training.cancelRun();
+      try { await this.loopPromise; } catch (_) {}
+      this.loopPromise = null;
+    }
     if (!Training.modelExists) { Training.buildModel(); Training.setDataTensors(); }
     Training.setPaused(false);
-    Training.setStopRequested(false);
     this.setStatus('training');
     // auto-open loss when training starts (it's closed by default now)
     try { const loss = document.getElementById('lossWrap'); if (loss && !loss.open) loss.open = true; } catch (_) {}
-    this.runLoop();
+    this.loopPromise = this.runLoop();
   },
 
   async runLoop() {
-    const cfg = Store.get('training');
-    const target = cfg.maxEpochs;
-    while (!Training.stopRequested && !Training.isPaused) {
-      if (Training.epochCounter >= target) {
-        this.setStatus('idle');
-        this.showToast('Reached ' + target + ' epochs', 'success');
-        return;
+    const myGen = Training.beginRun();
+    try {
+      while (!Training.stopRequested && !Training.isPaused) {
+        // read maxEpochs live — moving the "Run to" slider mid-run now works
+        const target = Store.get('training').maxEpochs;
+        if (Training.epochCounter >= target) {
+          this.setStatus('idle');
+          this.showToast('Reached ' + target + ' epochs', 'success');
+          return;
+        }
+        const remaining = target - Training.epochCounter;
+        const chunk = Math.min(remaining, 50);
+        const status = await Training.runEpochs(chunk, myGen);
+        if (myGen !== Training.currentGeneration()) return; // replaced — the new run owns the status now
+        if (status === 'nan' || status === 'diverged') { this.handleRunEnd(status); return; }
+        if (status === 'stopped') { this.setStatus('idle'); return; }
+        if (Training.isPaused) { this.setStatus('paused'); return; }
+        if (status === 'done' && Training.epochCounter >= target) { this.setStatus('idle'); return; }
+        await tf.nextFrame();
       }
-      const remaining = target - Training.epochCounter;
-      const chunk = Math.min(remaining, 50);
-      const status = await Training.runEpochs(chunk);
-      if (status === 'nan' || status === 'diverged') { this.handleRunEnd(status); return; }
-      if (status === 'stopped') { this.setStatus('idle'); return; }
-      if (Training.isPaused) { this.setStatus('paused'); return; }
-      if (status === 'done' && Training.epochCounter >= target) { this.setStatus('idle'); return; }
-      await tf.nextFrame();
+      if (Training.stopRequested) this.setStatus('idle');
+    } catch (e) {
+      // a rebuild raced us (equation/settings changed mid-epoch) — die quietly
+      if (myGen === Training.currentGeneration()) this.setStatus('idle');
     }
-    if (Training.stopRequested) this.setStatus('idle');
   },
 
   async togglePause() {
     const run = Store.get('run');
     if (run.status === 'training') { Training.setPaused(true); this.setStatus('paused'); }
-    else if (run.status === 'paused' || run.status === 'error') { Training.setPaused(false); this.setStatus('training'); this.runLoop(); }
+    else if (run.status === 'paused' || run.status === 'error') { await this.startTraining(); }
   },
 
   async runStep() {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) { this.showToast('Plot an equation first', 'warning'); return; }
-    Training.setStopRequested(true);
-    await new Promise(r => setTimeout(r, 60));
+    // stop any live loop and WAIT for it. The old code slept a fixed 60ms and
+    // hoped the loop had noticed — it usually hadn't, so Step and the loop
+    // double-trained and then the loop died on Step's pause flag.
+    if (this.loopPromise) {
+      Training.cancelRun();
+      try { await this.loopPromise; } catch (_) {}
+      this.loopPromise = null;
+    }
     Training.setStopRequested(false);
     if (!Training.modelExists) { Training.buildModel(); Training.setDataTensors(); }
-    const wasPaused = Training.isPaused;
-    const wasTraining = Store.get('run').status === 'training';
     Training.setPaused(false); this.setStatus('training');
-    const status = await Training.runEpochs(10);
+    const gen = Training.beginRun();
+    const status = await Training.runEpochs(10, gen);
     if (status === 'nan' || status === 'diverged') { this.handleRunEnd(status); return; }
-    Training.setPaused(wasPaused || !wasTraining);
-    this.setStatus(wasPaused || !wasTraining ? 'paused' : 'idle');
+    // leave it paused whether we interrupted a run or stepped from idle —
+    // Space / Start resumes cleanly either way
+    Training.setPaused(true); this.setStatus('paused');
   },
 
   exportWeights() {
@@ -736,24 +778,31 @@ ${Array.from({length: m.hiddenLayers}, (_,i) => `            nn.Linear(${i===0 ?
     Charts.setPrediction(g.xs, g.ys, predXs, predYs, trainDots.xs, trainDots.ys);
   },
 
+  // self-explaining: the truth curve only changes when the data or eval range
+  // changes — it used to recompile the equation (a fresh `new Function`) on
+  // every prediction refresh, ~10x/s while training. Now it's cached.
   sampleTruthOverEval() {
     const data = Store.get('data');
     const dom = Store.get('domain');
     const evalMin = dom.evalMin, evalMax = dom.evalMax;
+    const key = JSON.stringify([data.source, data.presetId, data.equation, evalMin, evalMax]);
+    if (this._truthCache && this._truthCache.key === key) return this._truthCache;
+    let out;
     if (data.presetId && PRESET_DEFS[data.presetId]) {
       const fn = PRESET_DEFS[data.presetId].fn;
       const xs=[], ys=[];
       for(let i=0;i<140;i++){ const x=evalMin+(evalMax-evalMin)*i/139; xs.push(x); ys.push(fn(x)); }
-      return { xs, ys: clipYs(ys) };
-    }
-    if (data.equation) {
+      out = { xs, ys: clipYs(ys) };
+    } else if (data.equation) {
       try {
         const cmp = Equation.compile(data.equation);
-        const s = Equation.sample(cmp, 140, evalMin, evalMax);
-        return s;
-      } catch (_) { return { xs: data.xs, ys: data.ys }; }
+        out = Equation.sample(cmp, 140, evalMin, evalMax);
+      } catch (_) { out = { xs: data.xs, ys: data.ys }; }
+    } else {
+      out = { xs: data.xs, ys: data.ys };
     }
-    return { xs: data.xs, ys: data.ys };
+    this._truthCache = { key, xs: out.xs, ys: out.ys };
+    return this._truthCache;
   },
 
   updatePredictionOnly() {
@@ -775,4 +824,7 @@ ${Array.from({length: m.hiddenLayers}, (_,i) => `            nn.Linear(${i===0 ?
 };
 
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+// explicit window export — top-level `const` doesn't become a window property,
+// and the inline theme script (and console tinkerers) reach App via window.App
+window.App = App;
 document.addEventListener('DOMContentLoaded', () => App.init());

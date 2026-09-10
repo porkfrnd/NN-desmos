@@ -45,6 +45,12 @@ const Equation = (() => {
     // ^ -> **  (do before fn replacement so we don't mangle)
     s = s.replace(/\^/g, '**');
 
+    // scientific notation FIRST — `1e-3*x` must become (1*10**(-3))*x before
+    // the implicit-mult pass below splits it into `1*e - 3*x` (a real curve,
+    // silently wrong — the worst kind of bug). `2e` (no exponent digits) is
+    // left alone so it still means 2·e.
+    s = s.replace(/((?:\d*\.)?\d+)[eE]([+-]?\d+)/g, '($1*10**($2))');
+
     // implicit multiplication: 2x -> 2*x, 2pi -> 2*pi, )x -> )*x, )( -> )*(
     // also 3sin -> 3*sin  — but only when not part of a longer name
     s = s.replace(/(\d)\s*(?=[a-zA-Z\(])/g, '$1*');
@@ -62,14 +68,13 @@ const Equation = (() => {
       s = s.replace(re, FN_MAP[k]);
     }
 
-    // allow only safe chars after transpilation
-    // digits, x, operators, parens, comma, dot, *, Math., PI, E
-    const allowed = /^[0-9x+\-*/%()., \t*MathPIE]+$/;
-    // quick check: strip Math.PI / Math.E / Math.xxx, then test remainder
+    // allow only safe chars after transpilation:
+    // strip the Math.* tokens we emit, then everything left must be
+    // digits / x / operators / parens — anything else is rejected
     const stripped = s.replace(/Math\.(PI|E|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|exp|log|sqrt|abs|sign|ceil|floor|round|pow|max|min)/g, '');
-    if (!/^[0-9x+\-*/%()., \t*]+$/.test(stripped)) {
+    if (!/^[0-9x+\-*/%()., \t]+$/.test(stripped)) {
       // collect offending chars for a nicer error
-      const bad = stripped.match(/[^0-9x+\-*/%()., \t*]/g);
+      const bad = stripped.match(/[^0-9x+\-*/%()., \t]/g);
       if (bad) throw new Error('Invalid characters: ' + [...new Set(bad)].join(' '));
     }
 
@@ -87,15 +92,16 @@ const Equation = (() => {
     } catch (e) {
       throw new Error('Could not parse equation: ' + e.message);
     }
-    // smoke test
+    // smoke test — a few non-finite probes are fine (log(0), 1/(x-1)…),
+    // but if NO probe is finite the equation can't be plotted at all
+    let finite = 0;
     for (const x of [-1, 0, 0.5, 1]) {
       let y;
       try { y = fn(x); } catch (e) { throw new Error('Error at x=' + x + ': ' + e.message); }
-      if (typeof y !== 'number' || !isFinite(y)) {
-        // allow a few non-finite at edges (e.g. 1/(x-1) at x=1) but not all
-        continue;
-      }
+      if (typeof y !== 'number') throw new Error('Equation must return a number');
+      if (isFinite(y)) finite++;
     }
+    if (finite === 0) throw new Error('Never returns a finite value on [-1,1] — e.g. log(x) needs x > 0');
     return { fn, expr, src: normalize(src) };
   }
 
@@ -114,7 +120,8 @@ const Equation = (() => {
       const x = trainMin + (trainMax - trainMin) * i / (count - 1);
       let y;
       try { y = fn(x); } catch (_) { y = NaN; }
-      if (!isFinite(y)) y = Math.sign(y || 0) * 1.5;
+      // NaN -> 0 (a "gap" that reads as the axis), ±Inf -> clip to the plot box
+      if (!isFinite(y)) y = Number.isNaN(y) ? 0 : Math.sign(y) * 1.5;
       else if (noiseStd > 0) y += gaussianNoise(noiseStd);
       xs.push(x);
       ys.push(y);

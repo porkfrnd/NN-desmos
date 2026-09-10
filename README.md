@@ -54,13 +54,13 @@ Shortcuts: `Space` start/pause, `R` reset, `,` step, `?` help.
 
 ```
 Equation → 100 points over train range → clip to [-1.5,1.5]
-         → Fourier / Chebyshev embedding (or not)
+         → Fourier / Chebyshev embedding scaled to the train range (or not)
          → 1-5 dense layers (tanh/ReLU/SiLU/GELU/SIREN with ω₀)
          → manual training loop: optimizer.minimize(mse + wd·‖W‖²)
-         → every 10 epochs: predict over eval range → update graph + loss (log scale)
+         → train in ~12ms slices, yield a frame; graph + loss redraw ~10×/s
 ```
 
-Why manual loop, not `model.fit()`? `fit()` can't pause mid-epoch. We check `isPaused` each epoch and `await tf.nextFrame()` every 2 so the UI stays 60fps.
+Why manual loop, not `model.fit()`? `fit()` can't pause mid-epoch. We check `isPaused` every epoch and train in ~12ms time slices with `await tf.nextFrame()` between them — the UI stays smooth *and* the epoch rate stays high. (A fixed "2 epochs per frame" cadence used to cap training at ~100 epochs/s no matter how fast your GPU was.)
 
 Why `Store` without `JSON.stringify` on large arrays? That was the lag. Reference check is enough.
 
@@ -77,11 +77,14 @@ Fonts: Inter + JetBrains Mono. Colors + grain borrowed from my [snake game](http
 index.html        # hero graph + equation + toolbar + gear modal
 css/              # tokens, base, layout, components, graph, equation, modal, toast
 js/store.js       # pub/sub, no JSON lag
+js/features.js    # Fourier/Chebyshev embeddings, scaled to the train range
+js/share.js       # URL hash encode/decode — share links restore everything
 js/equation.js    # safe Math.* parser (allow-list, no eval)
-js/model.js       # training loop, embeddings, L2
+js/siren.js       # real SIREN layer with the paper init (ω₀ every layer)
+js/model.js       # training loop, time-budgeted yielding, L2
 js/charts.js      # dots, trail, train shading, zoom
 js/app.js         # wiring, URL hash, shortcuts
-tests/run.js      # 28 tests (node tests/run.js)
+tests/run.js      # 47 tests (node tests/run.js)
 ```
 
 ---
@@ -90,9 +93,9 @@ tests/run.js      # 28 tests (node tests/run.js)
 
 ```bash
 node tests/run.js
-# 28 passed
-# Try: empty, no x, `x; alert(1)` (blocked), every preset, every activation,
-# Fourier/Chebyshev, zoom, theme, export, URL, shortcuts
+# 47 passed
+# Try: empty, no x, `x; alert(1)` (blocked), scientific notation, NaN handling,
+# every preset, SIREN init bounds, Fourier/Chebyshev scaling, share-link round trip
 ```
 
 ---

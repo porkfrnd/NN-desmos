@@ -21,14 +21,13 @@ const Charts = (() => {
     try {
       const d = (typeof Store !== 'undefined' && Store.get('domain')) || { evalMin: -2, evalMax: 2 };
       initialView = { xMin: d.evalMin, xMax: d.evalMax, yMin: -1.6, yMax: 1.6 };
-      // if view is still at previous initial, snap to new
-      if (view.xMin === -1 && view.xMax === 1 && d.evalMin !== -1) { /* keep zoom if user zoomed */ }
       // on domain change, reset to new eval range if not zoomed
       const isAtInitial = Math.abs(view.xMax - view.xMin - (initialView.xMax - initialView.xMin)) < 1e-6;
       if (isAtInitial) view = { ...initialView };
     } catch (_) {}
   }
   let interactBound = false;
+  let boundCanvas = null; // theme toggles destroy+re-init charts — don't stack duplicate listeners
 
   function cssVar(name, fallback) {
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -181,7 +180,9 @@ const Charts = (() => {
     if (predChart) try { predChart.destroy(); } catch (_) {}
     if (lossChart) try { lossChart.destroy(); } catch (_) {}
     predChart = null; lossChart = null;
-    interactBound = false;
+    // NOTE: interactBound is deliberately NOT reset — destroy+init on the
+    // same canvas (theme toggle) must not re-attach wheel/pointer listeners;
+    // duplicates made every zoom step apply 2x, 3x… per toggle
   }
 
   // ---- zoom / pan ----
@@ -249,8 +250,10 @@ const Charts = (() => {
   }
 
   function bindInteractions(canvas) {
-    if (!canvas || interactBound) return;
+    if (!canvas) return;
+    if (interactBound && boundCanvas === canvas) return; // already wired (theme re-init)
     interactBound = true;
+    boundCanvas = canvas;
     const box = canvas.parentElement;
     if (box) box.style.touchAction = 'none';
 
@@ -327,7 +330,7 @@ const Charts = (() => {
         lastPinchDist = dist;
       }
     }, { passive: false });
-    canvas.addEventListener('touchend', () => { if (event.touches && event.touches.length < 2) lastPinchDist = null; });
+    canvas.addEventListener('touchend', (e) => { if (e.touches && e.touches.length < 2) lastPinchDist = null; });
   }
 
   function resetTrail() { prevPred = null; }

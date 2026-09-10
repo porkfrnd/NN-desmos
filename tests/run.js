@@ -20,13 +20,17 @@ function approx(a, b, eps=1e-6) { assert.ok(Math.abs(a-b) < eps, `expected ${a} 
 const root = path.join(__dirname, '..');
 const storeSrc    = fs.readFileSync(path.join(root, 'js/store.js'), 'utf8');
 const presetsSrc  = fs.readFileSync(path.join(root, 'js/presets.js'), 'utf8');
+const featuresSrc = fs.readFileSync(path.join(root, 'js/features.js'), 'utf8');
+const shareSrc    = fs.readFileSync(path.join(root, 'js/share.js'), 'utf8');
 const equationSrc = fs.readFileSync(path.join(root, 'js/equation.js'), 'utf8');
+const sirenSrc    = fs.readFileSync(path.join(root, 'js/siren.js'), 'utf8');
 const modelSrc    = fs.readFileSync(path.join(root, 'js/model.js'), 'utf8');
 
 // mock globals that the files expect
 const sandbox = {
   console,
   Math, JSON, Array, Object, String, Number, Date, Error,
+  URLSearchParams,
   // fake tf and Chart so files don't throw on load
   tf: {
     scalar: () => ({dispose:()=>{}}), tidy: fn=>fn(), mul: ()=>({}), add: ()=>({}), sub: ()=>({}),
@@ -51,17 +55,25 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-// Load in dependency order: store -> presets -> equation
+// Load in dependency order: store -> presets -> features -> share -> equation -> siren -> model
 // (model is not needed for most unit tests, but we load it to check it parses)
-try { vm.runInContext(storeSrc, sandbox, {filename: 'store.js'}); } catch (e) { console.error('store.js failed to load:', e.message); }
-try { vm.runInContext(presetsSrc, sandbox, {filename: 'presets.js'}); } catch (e) { console.error('presets.js failed:', e.message); }
-try { vm.runInContext(equationSrc, sandbox, {filename: 'equation.js'}); } catch (e) { console.error('equation.js failed:', e.message); }
+const loadOrder = [
+  ['store.js', storeSrc], ['presets.js', presetsSrc], ['features.js', featuresSrc],
+  ['share.js', shareSrc], ['equation.js', equationSrc], ['siren.js', sirenSrc], ['model.js', modelSrc],
+];
+for (const [name, src] of loadOrder) {
+  try { vm.runInContext(src, sandbox, { filename: name }); }
+  catch (e) { console.error(`${name} failed to load:`, e.message); process.exitCode = 1; }
+}
 
 // `const Store = ...` in the VM does not become a property of `sandbox` —
 // grab it via explicit eval in that context (like a browser global).
 function getGlobal(name) { try { return vm.runInContext(name, sandbox); } catch (_) { return undefined; } }
 const Store = getGlobal('Store');
 const Equation = getGlobal('Equation');
+const Features = getGlobal('Features');
+const Share = getGlobal('Share');
+const sirenDense = getGlobal('sirenDense');
 const PRESET_DEFS = getGlobal('PRESET_DEFS');
 const Presets = getGlobal('Presets');
 const samplePreset = getGlobal('samplePreset');
@@ -186,6 +198,173 @@ test('domain set', () => {
   assert.strictEqual(d.trainMin, -0.5);
   // reset
   Store.set({ domain: { trainMin: -1, trainMax: 1, evalMin: -2, evalMax: 2 } });
+});
+
+// ── Equation: scientific notation (regression: 1e-3*x parsed as 1*e - 3*x) ─
+console.log('\n── Scientific notation ──');
+test('parses 1e-3*x', () => {
+  const c = Equation.compile('1e-3*x');
+  approx(c.fn(1), 0.001, 1e-12);
+  approx(c.fn(-2), -0.002, 1e-12);
+});
+test('parses 2.5E2*x', () => {
+  const c = Equation.compile('2.5E2*x');
+  approx(c.fn(1), 250, 1e-9);
+});
+test('2e*x still means 2·e·x (no exponent digits)', () => {
+  const c = Equation.compile('2e*x');
+  approx(c.fn(1), 2 * Math.E, 1e-12);
+});
+test('x*1e-3 and 1e-3 combine with the rest of the grammar', () => {
+  const c = Equation.compile('sin(pi*x)*1e-2');
+  approx(c.fn(0.5), 0.01, 1e-12);
+});
+
+// ── Equation: non-finite handling ─────────────────────────────────────────
+console.log('\n── Non-finite handling ──');
+test('NaN samples become 0, ±Inf clips to ±1.5', () => {
+  const c = Equation.compile('log(x)');
+  const s = Equation.sample(c, 5, -1, 1); // xs: -1,-0.5,0,0.5,1
+  assert.strictEqual(s.ys[0], 0); // log(-1) = NaN -> 0, not a fake ±1.5
+  assert.ok(Math.abs(s.ys[3] - Math.log(0.5)) < 1e-12);
+  const d = Equation.compile('1/(x-1)');
+  const s2 = Equation.sample(d, 5, -1, 1); // x=1 -> +Inf
+  assert.strictEqual(s2.ys[4], 1.5);
+});
+test('rejects equations that are never finite', () => {
+  assert.throws(() => Equation.compile('sqrt(-x^2 - 1)'));
+});
+
+// ── Features (embeddings) ─────────────────────────────────────────────────
+console.log('\n── Features ──');
+test('fourier feature count = 2*(N+1)', () => {
+  assert.strictEqual(Features.featureDim({ embedding: 'fourier', fourierN: 3 }), 8);
+  assert.strictEqual(Features.featureDim({ embedding: 'fourier', fourierN: 0 }), 2);
+});
+test('chebyshev feature count = degree+1', () => {
+  assert.strictEqual(Features.featureDim({ embedding: 'chebyshev', chebyshevDegree: 6 }), 7);
+});
+test('chebyshev values are the actual T_n', () => {
+  const f = Features.buildFeatureFn({ embedding: 'chebyshev', chebyshevDegree: 3 }, null);
+  const out = f(0.5); // T0..T3 at 0.5: 1, .5, -.5, -1
+  approx(out[0], 1); approx(out[1], 0.5); approx(out[2], -0.5); approx(out[3], -1);
+});
+test('features scale to the train range (T1(x=-2) on [-2,2] is -1, not -2)', () => {
+  const f = Features.buildFeatureFn({ embedding: 'chebyshev', chebyshevDegree: 2 }, { trainMin: -2, trainMax: 2 });
+  const out = f(-2);
+  approx(out[1], -1, 1e-9); // rescaled u = -1 at the left edge
+  approx(out[2], 1, 1e-9);  // T2(-1) = 1
+});
+test('default train range [-1,1] is identity (no behavior change)', () => {
+  const f = Features.buildFeatureFn({ embedding: 'chebyshev', chebyshevDegree: 2 }, { trainMin: -1, trainMax: 1 });
+  approx(f(0.25)[1], 0.25, 1e-12);
+});
+test('featureDim agrees with the feature fn length (the drift bug)', () => {
+  for (const cfg of [
+    { embedding: 'fourier', fourierN: 5 }, { embedding: 'fourier', fourierN: 99 }, // clamped to 6
+    { embedding: 'chebyshev', chebyshevDegree: 12 }, { embedding: 'chebyshev', chebyshevDegree: 99 },
+    { embedding: 'none' },
+  ]) {
+    const fn = Features.buildFeatureFn(cfg, { trainMin: -1, trainMax: 1 });
+    assert.strictEqual(fn(0.3).length, Features.featureDim(cfg), JSON.stringify(cfg));
+  }
+});
+test('legacy fourierFeatures flag still selects fourier (when embedding unset)', () => {
+  assert.strictEqual(Features.featureDim({ fourierFeatures: true, fourierN: 2 }), 6);
+  assert.strictEqual(Features.featureDim({ embedding: undefined, fourierFeatures: true, fourierN: 2 }), 6);
+});
+
+// ── Share links (URL hash round trip) ─────────────────────────────────────
+console.log('\n── Share links ──');
+test('encode -> decode round trips everything', () => {
+  const state = {
+    data: { source: 'equation', presetId: null, equation: 'sin(2*pi*x) + e^-x', xs: [], ys: [] },
+    model: { hiddenLayers: 4, neuronsPerLayer: 24, activation: 'sine', embedding: 'fourier', fourierN: 4, fourierSigma: 1.2, chebyshevDegree: 8, omega0: 17.5 },
+    training: { optimizer: 'sgd', learningRate: 0.003, weightDecay: 0.0001, noise: 0.1, maxEpochs: 500 },
+    domain: { trainMin: -1, trainMax: 1, evalMin: -2, evalMax: 2 },
+  };
+  const hash = '#' + Share.encode(state);
+  const back = Share.sanitize(Share.decode(hash));
+  assert.strictEqual(back.model.activation, 'sine');
+  assert.strictEqual(back.model.embedding, 'fourier');
+  assert.strictEqual(back.model.hiddenLayers, 4);
+  assert.strictEqual(back.model.fourierSigma, 1.2);
+  assert.strictEqual(back.model.omega0, 17.5);
+  assert.strictEqual(back.training.learningRate, 0.003);
+  assert.strictEqual(back.training.weightDecay, 0.0001);
+  assert.strictEqual(back.training.noise, 0.1);
+  assert.strictEqual(back.training.optimizer, 'sgd');
+  // (field-by-field: vm objects have a different Object.prototype than host objects)
+  assert.strictEqual(back.domain.trainMin, -1);
+  assert.strictEqual(back.domain.trainMax, 1);
+  assert.strictEqual(back.domain.evalMin, -2);
+  assert.strictEqual(back.domain.evalMax, 2);
+  assert.strictEqual(back.data.equation, state.data.equation);
+});
+test('sanitize drops hostile/garbage values', () => {
+  const back = Share.sanitize(Share.decode('#act=hax&emb=laser&lr=999&opt=adam&train=2,1&eq=x^2'));
+  assert.strictEqual(back.model.activation, undefined);
+  assert.strictEqual(back.model.embedding, undefined);
+  assert.strictEqual(back.training.learningRate, 0.1); // 999 clamped to the slider max, not dropped
+  assert.strictEqual(back.domain, null); // min >= max -> dropped
+  assert.strictEqual(back.data.equation, 'x^2');
+});
+test('sanitize clamps instead of rejecting slightly-off values', () => {
+  const back = Share.sanitize(Share.decode('#hl=99&np=1&lr=1'));
+  assert.strictEqual(back.model.hiddenLayers, 5);
+  assert.strictEqual(back.model.neuronsPerLayer, 2);
+  assert.strictEqual(back.training.learningRate, 0.1);
+});
+test('decode ignores junk hashes', () => {
+  assert.strictEqual(Share.decode(''), null);
+  assert.strictEqual(Share.decode('#'), null);
+  assert.strictEqual(Share.decode('#foo=bar'), null);
+});
+
+// ── SIREN layer (regression: class was block-scoped, factory always fell back) ─
+console.log('\n── SIREN layer ──');
+test('sirenDense falls back to tanh dense when tf lacks Layer (CDN degraded)', () => {
+  // sandbox's tf mock has no layers.Layer -> factory must be null, not throw
+  const layer = sirenDense(8, true, 30);
+  assert.ok(layer, 'fallback layer returned');
+});
+test('SirenDense uses the paper init: first ±1/fan_in, hidden ±√6/fan_in/ω₀', () => {
+  // separate context with a Layer-capable tf mock that captures initializer bounds
+  const captured = [];
+  class MockWeight {
+    constructor(name, shape, dtype, init) { this.name = name; this.shape = shape;
+      if (init && init.__cfg) captured.push(init.__cfg); }
+    read() { return {}; }
+  }
+  const tfMock = {
+    layers: {
+      Layer: class { constructor(cfg) { this.cfg = cfg; } addWeight(...a) { return new MockWeight(...a); } },
+      dense: () => ({}),
+    },
+    serialization: { registerClass: () => {} },
+    initializers: {
+      randomUniform: (cfg) => ({ __cfg: cfg }),
+      zeros: () => ({ __cfg: { minval: 0, maxval: 0 } }),
+    },
+    tidy: (fn) => fn(),
+    sin: () => ({}), mul: () => ({}),
+  };
+  const sb = { tf: tfMock };
+  sb.window = sb; sb.globalThis = sb;
+  vm.createContext(sb);
+  vm.runInContext(sirenSrc, sb, { filename: 'siren.js' });
+  const sd = vm.runInContext('sirenDense', sb);
+  const first = sd(16, true, 30);   // fan_in would come from build(inputShape)
+  first.build([4, 16]);             // inputShape -> fanIn 16
+  const hidden = sd(8, false, 30);
+  hidden.build([4, 8]);
+  // captured: [kernel(first), kernel(hidden)] (zeros biases don't set __cfg? they do — filter)
+  const kernels = captured.filter((c) => c.minval < 0);
+  approx(kernels[0].minval, -1 / 16, 1e-12);          // first layer: U(±1/fan_in)
+  approx(kernels[0].maxval, 1 / 16, 1e-12);
+  approx(kernels[1].minval, -Math.sqrt(6 / 8) / 30, 1e-12); // hidden: U(±√6/fan_in/ω₀)
+  approx(kernels[1].maxval, Math.sqrt(6 / 8) / 30, 1e-12);
+  assert.strictEqual(first.getClassName ? first.getClassName() : first.constructor.className, 'SirenDense');
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────

@@ -2,26 +2,42 @@
  * Model & training — the ML heart.
  *
  * Why manual loop, not model.fit(): `fit()` can't pause mid-epoch.
- * We use `optimizer.minimize()` + `isPaused` ref checked each epoch,
- * and `await tf.nextFrame()` to yield to the browser so the UI stays
- * at 60fps even while training.
+ * We use `optimizer.minimize()` + `isPaused` ref checked every epoch,
+ * and yield to the browser so the UI stays responsive during training.
  *
- * Memory: every scratch tensor is in `tf.tidy()`. Only the model's
- * own weights survive. `predictXs` creates its own tensors and
- * disposes them explicitly — never inside an async tidy.
+ * Why time-budgeted yielding: the old loop waited for a frame every 2
+ * epochs, which capped training at ~2 epochs per 16.7ms no matter how fast
+ * tf.js actually was (and read the loss tensor every epoch, stalling the
+ * WebGL pipeline). Now we train for ~12ms, then give the browser one frame —
+ * on a WebGL backend that's ~5-10× more epochs per second with the same
+ * responsiveness. The graph/loss redraw is capped at ~11×/s; the chart, not
+ * the math, is the bottleneck at high epoch rates.
  *
- * Embeddings: Fourier (trig) for periodic, Chebyshev for polynomials.
+ * Races: rebuilding the model while a loop is mid-epoch used to train the
+ * wrong tensors or explode on disposed ones. Every run now takes a
+ * *generation* token; anything that replaces the model bumps the generation
+ * and stale loops retire quietly at their next check.
+ *
+ * Memory: every scratch tensor is in `tf.tidy()`. Only the model's own
+ * weights survive. `predictXs` creates its own tensors and disposes them
+ * explicitly — never inside an async tidy.
+ *
+ * Embeddings live in features.js (pure) — one source of truth for the
+ * feature map AND the input dim, scaled to the train range.
  * Regularization: L2 is added to MSE as `wd * sum(W^2)` only when wd>0.
  */
 // Model construction + manual training loop.
 //
-// Manual loop with isPaused ref, tf.tidy discipline, and L2 weight decay.
-// Supports embeddings: none / fourier (variable N, sigma) / chebyshev,
-// and activations: relu, tanh, sigmoid, softplus, silu, gelu, sine (SIREN).
+// Time-budgeted yielding, generation tokens for safe rebuilds, and L2 weight decay.
+// Activations: relu, tanh, sigmoid, softplus, silu, gelu, sine (SIREN).
 
-const TRAIN_UPDATE_EVERY = 10; // 10 = smoother, less chart thrash at 60fps
-const PRED_SAMPLES = 140;
+const YIELD_BUDGET_MS = 12;   // train this long, then give the browser a frame
+const UI_REFRESH_MS = 90;     // redraw graph + loss at most ~11x/s
+const LOSS_EVERY = 10;        // read the loss every N epochs (each readback stalls the GPU)
 const NAN_THRESHOLD = 1e6;
+const PRED_SAMPLES = 140;
+
+const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
 
 const Training = (() => {
   const ctx = {
@@ -34,53 +50,20 @@ const Training = (() => {
     epochCounter: 0,
     lastLoss: null,
     featureFn: null,
+    generation: 0,   // bumped whenever the run is replaced/cancelled
+    pendingLoss: [], // loss points waiting for the next UI flush
   };
 
-  // ---- Feature transforms ----
+  // ---- Feature transforms (see features.js) ----
   function buildFeatureFn() {
-    const m = Store.get('model');
-    const emb = m.embedding || (m.fourierFeatures ? 'fourier' : 'none');
-    if (emb === 'fourier') {
-      const N = Math.max(0, Math.min(6, m.fourierN ?? 3));
-      const sigma = m.fourierSigma ?? 1.0;
-      return (x) => {
-        const out = [];
-        for (let k = 0; k <= N; k++) {
-          const f = (1 << k) * Math.PI * sigma;
-          out.push(Math.sin(f * x), Math.cos(f * x));
-        }
-        return out;
-      };
-    }
-    if (emb === 'chebyshev') {
-      const deg = Math.max(1, Math.min(16, m.chebyshevDegree ?? 6));
-      return (x) => {
-        // Chebyshev T_n(x), clamped to [-1,1] domain (extrapolation will diverge naturally)
-        const out = [];
-        let t0 = 1, t1 = x;
-        out.push(t0);
-        if (deg >= 1) out.push(t1);
-        for (let n = 2; n <= deg; n++) {
-          const tn = 2 * x * t1 - t0;
-          out.push(tn);
-          t0 = t1; t1 = tn;
-        }
-        return out;
-      };
-    }
-    return (x) => [x];
+    return Features.buildFeatureFn(Store.get('model'), Store.get('domain'));
   }
-
   function inputDimForModel() {
-    const m = Store.get('model');
-    const emb = m.embedding || (m.fourierFeatures ? 'fourier' : 'none');
-    if (emb === 'fourier') return 2 * ((m.fourierN ?? 3) + 1);
-    if (emb === 'chebyshev') return (m.chebyshevDegree ?? 6) + 1;
-    return 1;
+    return Features.featureDim(Store.get('model'));
   }
 
   // self-explaining: SiLU and GELU aren't built into tfjs dense, so we
-  // implement them as tiny custom layers. Defined once, reused for every hidden layer.
+  // implement them as tiny custom layers. Defined once, reused per layer.
   function applyCustomActivation(t, name) {
     switch (name) {
       case 'silu': return tf.tidy(() => tf.mul(t, tf.sigmoid(t)));
@@ -140,12 +123,15 @@ const Training = (() => {
     const output = tf.layers.dense({ units: 1, activation: 'linear' }).apply(x);
     ctx.model = tf.model({ inputs, outputs: output });
 
-    const optCfg = Store.get('training');
-    if (optCfg.optimizer === 'adam') ctx.optimizer = tf.train.adam(optCfg.learningRate);
-    else ctx.optimizer = tf.train.sgd(optCfg.learningRate);
-
+    buildOptimizer();
     ctx.lastLoss = null;
     return ctx.model;
+  }
+
+  function buildOptimizer() {
+    if (ctx.optimizer) { try { ctx.optimizer.dispose(); } catch (e) {} ctx.optimizer = null; }
+    const optCfg = Store.get('training');
+    ctx.optimizer = optCfg.optimizer === 'adam' ? tf.train.adam(optCfg.learningRate) : tf.train.sgd(optCfg.learningRate);
   }
 
   // ---- Dataset / tensors ----
@@ -165,6 +151,8 @@ const Training = (() => {
     if (ctx.xTrain) { try { ctx.xTrain.dispose(); } catch (e) {} ctx.xTrain = null; }
     if (ctx.yTrain) { try { ctx.yTrain.dispose(); } catch (e) {} ctx.yTrain = null; }
     if (ctx.optimizer) { try { ctx.optimizer.dispose(); } catch (e) {} ctx.optimizer = null; }
+    ctx.generation++; // any in-flight loop must stop touching the tensors we just freed
+    ctx.pendingLoss = [];
     Store.set({ run: { ...Store.get('run'), status: 'idle', loss: null } });
   }
 
@@ -190,35 +178,53 @@ const Training = (() => {
   }
 
   // ---- Training loop ----
-  async function runEpochs(count) {
+  async function runEpochs(count, gen) {
     if (!ctx.model || !ctx.xTrain) return 'no-model';
+    const myGen = (gen != null) ? gen : ctx.generation;
+    let lastYield = nowMs(), lastUi = 0;
     for (let i = 0; i < count; i++) {
-      if (ctx.stopRequested) return 'stopped';
-      if (ctx.isPaused) return 'paused';
+      if (ctx.stopRequested || myGen !== ctx.generation) { flushLoss(); return 'stopped'; }
+      if (ctx.isPaused) { flushLoss(); return 'paused'; }
+
+      // read the loss (and check divergence) only every LOSS_EVERY epochs —
+      // each dataSync is a GPU pipeline stall, and at high epoch rates that
+      // stall was the single biggest per-epoch cost
+      const computeLoss = ((ctx.epochCounter + 1) % LOSS_EVERY === 0) || i === count - 1;
       let lossValue = null;
       tf.tidy(() => {
-        const loss = ctx.optimizer.minimize(() => meanSquaredError(), true);
-        if (loss) lossValue = loss.dataSync()[0];
+        const loss = ctx.optimizer.minimize(() => meanSquaredError(), computeLoss);
+        if (computeLoss && loss) lossValue = loss.dataSync()[0];
       });
-      if (typeof lossValue !== 'number' || isNaN(lossValue)) {
-        Store.set({ run: { ...Store.get('run'), status: 'error', message: 'NaN loss — auto-paused. Try lower LR or change activation.' } });
-        ctx.isPaused = true;
-        return 'nan';
-      }
-      if (lossValue > NAN_THRESHOLD) {
-        Store.set({ run: { ...Store.get('run'), status: 'error', message: 'Loss diverged — auto-paused. Lower LR.' } });
-        ctx.isPaused = true;
-        return 'diverged';
-      }
-      ctx.lastLoss = lossValue;
       ctx.epochCounter++;
-      // Desmos-like smoothness: update charts every 10, but yield to UI every 2 epochs
-      // so sliders and graph stay at 60fps even during heavy matmuls.
-      const shouldRefresh = (i % TRAIN_UPDATE_EVERY === TRAIN_UPDATE_EVERY - 1) || i === count - 1;
-      if (shouldRefresh) await refreshUi(lossValue);
-      if (i % 2 === 1) await tf.nextFrame();
-      else if (shouldRefresh) await tf.nextFrame();
+      if (computeLoss) {
+        if (typeof lossValue !== 'number' || isNaN(lossValue)) {
+          ctx.pendingLoss = []; // NaN history is noise, don't flush it
+          Store.set({ run: { ...Store.get('run'), status: 'error', message: 'NaN loss — auto-paused. Try lower LR or change activation.' } });
+          ctx.isPaused = true;
+          return 'nan';
+        }
+        if (lossValue > NAN_THRESHOLD) {
+          flushLoss();
+          Store.set({ run: { ...Store.get('run'), status: 'error', message: 'Loss diverged — auto-paused. Lower LR.' } });
+          ctx.isPaused = true;
+          return 'diverged';
+        }
+        ctx.lastLoss = lossValue;
+        ctx.pendingLoss.push({ epoch: ctx.epochCounter, loss: lossValue });
+      }
+
+      // time-budgeted yield: keep the math running for a slice of a frame,
+      // then let the browser breathe — instead of a fixed 2-epochs-per-frame
+      if (nowMs() - lastYield >= YIELD_BUDGET_MS || i === count - 1) {
+        if (nowMs() - lastUi >= UI_REFRESH_MS || i === count - 1) {
+          await refreshUi();
+          lastUi = nowMs();
+        }
+        await tf.nextFrame();
+        lastYield = nowMs();
+      }
     }
+    flushLoss();
     return 'done';
   }
 
@@ -251,23 +257,32 @@ const Training = (() => {
     });
   }
 
-  async function refreshUi(epochLoss) {
-    const run = Store.get('run');
-    const hist = [...Store.get('lossHistory')];
-    if (typeof epochLoss === 'number') hist.push({ epoch: ctx.epochCounter, loss: epochLoss });
-    Store.set({ lossHistory: hist, run: { ...run, epoch: ctx.epochCounter, loss: epochLoss } });
+  // hand buffered loss points to the store (cheap: one array concat per flush)
+  function flushLoss() {
+    if (!ctx.pendingLoss.length) return;
+    Store.set({
+      lossHistory: [...Store.get('lossHistory'), ...ctx.pendingLoss],
+      run: { ...Store.get('run'), epoch: ctx.epochCounter, loss: ctx.lastLoss },
+    });
+    ctx.pendingLoss = [];
+  }
+
+  async function refreshUi() {
+    flushLoss();
     const dom = Store.get('domain');
-    const evalMin = dom ? dom.evalMin : -1, evalMax = dom ? dom.evalMax : 1;
     const xs = [];
-    for (let i = 0; i < PRED_SAMPLES; i++) xs.push(evalMin + (evalMax - evalMin) * i / (PRED_SAMPLES - 1));
-    const preds = await predictXs(xs);
-    if (preds) Store.set({ predictions: { xs, ys: preds } });
+    for (let i = 0; i < PRED_SAMPLES; i++) xs.push(dom.evalMin + (dom.evalMax - dom.evalMin) * i / (PRED_SAMPLES - 1));
+    try {
+      const preds = await predictXs(xs);
+      if (preds) Store.set({ predictions: { xs, ys: preds } });
+    } catch (_) {
+      // the model was swapped mid-predict (equation/settings changed) —
+      // the run that replaced us will refresh on its own
+    }
   }
 
   function rebuildOptimizer() {
-    if (ctx.optimizer) { try { ctx.optimizer.dispose(); } catch (_) {} ctx.optimizer = null; }
-    const optCfg = Store.get('training');
-    ctx.optimizer = optCfg.optimizer === 'adam' ? tf.train.adam(optCfg.learningRate) : tf.train.sgd(optCfg.learningRate);
+    buildOptimizer();
   }
 
   function exportWeights() {
@@ -323,13 +338,28 @@ const Training = (() => {
     get stopRequested() { return ctx.stopRequested; },
     get modelExists() { return !!ctx.model; },
     get epochCounter() { return ctx.epochCounter; },
+    // A new run claims the generation; cancelled loops see the mismatch at
+    // their next epoch check and exit without touching the fresh model.
+    beginRun() { ctx.stopRequested = false; ctx.isPaused = false; return ++ctx.generation; },
+    cancelRun() {
+      ctx.stopRequested = true;
+      ctx.generation++;
+      const run = Store.get('run');
+      if (run.status === 'training') Store.set({ run: { ...run, status: 'idle' } });
+    },
+    currentGeneration() { return ctx.generation; },
     setPaused(v) {
       ctx.isPaused = !!v;
       const run = Store.get('run');
       if (v) Store.set({ run: { ...run, status: 'paused' } });
       else Store.set({ run: { ...run, status: 'training' } });
     },
-    resetEpochCounter() { ctx.epochCounter = 0; Store.set({ run: { ...Store.get('run'), epoch: 0, loss: null } }); },
+    resetEpochCounter() {
+      ctx.epochCounter = 0;
+      ctx.pendingLoss = [];
+      ctx.lastLoss = null;
+      Store.set({ run: { ...Store.get('run'), epoch: 0, loss: null } });
+    },
     setStopRequested(v) { ctx.stopRequested = !!v; },
   };
 })();

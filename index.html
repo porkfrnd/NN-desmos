@@ -92,8 +92,6 @@
     <div class="chartbox sm"><canvas id="lossChart"></canvas></div>
   </details>
 
-  </div>
-
   <div class="gallery">
     <div class="gallery-head">
       <span>Examples</span>
@@ -270,6 +268,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="js/store.js"></script>
 <script src="js/presets.js"></script>
+<script src="js/features.js"></script>
+<script src="js/share.js"></script>
 <script src="js/equation.js"></script>
 <script src="js/siren.js"></script>
 <script src="js/model.js"></script>
@@ -287,9 +287,11 @@
         if (window.Charts && window.Store) {
           Charts.destroy();
           Charts.init(document.getElementById('predChart'), document.getElementById('lossChart'));
-          var d = Store.get('data'), p = Store.get('predictions');
-          if (d && d.xs && d.xs.length) Charts.setPrediction(d.xs, d.ys, p.xs || [], p.ys || []);
-          Charts.setLoss(Store.get('lossHistory'));
+          // full re-render: truth over the *eval* range + training dots +
+          // prediction + loss. (This used to pass train-range samples as the
+          // truth line and drop the dots entirely on every theme toggle.)
+          if (window.App && Store.get('data').xs && Store.get('data').xs.length) App.renderAll();
+          else Charts.setLoss(Store.get('lossHistory'));
         }
       } catch (e) {}
     }
