@@ -17,6 +17,38 @@ function $all(sel, root) { return Array.from((root || document).querySelectorAll
 const App = {
   loopPromise: null,
   _loopResolve: null,
+  _predictToken: 0,
+  _truthCache: { key: null, fn: null },
+
+  async stopLoopAndWait(timeoutMs = 2000) {
+    Training.setStopRequested(true);
+    if (this.loopPromise) {
+      try {
+        await Promise.race([
+          this.loopPromise,
+          new Promise((_, rej) => setTimeout(() => rej(new Error('stopTimeout')), timeoutMs)),
+        ]);
+      } catch (_) {
+        if (this._loopResolve) try { this._loopResolve(); } catch (_) {}
+        this.loopPromise = null;
+        this._loopResolve = null;
+      }
+    } else {
+      await new Promise(r => setTimeout(r, 80));
+    }
+  },
+
+  async trackLoop() {
+    let resolveLoop;
+    this.loopPromise = new Promise(r => { resolveLoop = r; this._loopResolve = r; });
+    try {
+      await this.runLoop();
+    } finally {
+      if (resolveLoop) resolveLoop();
+      this.loopPromise = null;
+      this._loopResolve = null;
+    }
+  },
 
   init() {
     if (typeof tf === 'undefined') {
@@ -221,8 +253,14 @@ const App = {
       btn.className = 'preset-btn';
       btn.dataset.preset = id;
       const def = PRESET_DEFS[id];
-      btn.innerHTML = '<span class="preset-name">' + def.name + '</span>' +
-                      '<span class="preset-formula">' + def.formula + '</span>';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'preset-name';
+      nameSpan.textContent = def.name;
+      const formulaSpan = document.createElement('span');
+      formulaSpan.className = 'preset-formula';
+      formulaSpan.textContent = def.formula;
+      btn.appendChild(nameSpan);
+      btn.appendChild(formulaSpan);
       btn.addEventListener('click', () => this.loadPreset(id));
       grid.appendChild(btn);
     });
@@ -295,7 +333,7 @@ const App = {
     });
   },
 
-  applyEquation(raw, presetId) {
+  async applyEquation(raw, presetId) {
     const input = $('#equationInput');
     const eqStr = raw && String(raw).trim() ? String(raw).trim() : (input ? input.value.trim() : '');
     if (!eqStr) throw new Error('Empty equation. Try  x^2 + 6*x');
@@ -305,7 +343,7 @@ const App = {
     try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax, noise); } catch (e) { this.showError(e.message); throw e; }
     this.clearError();
     if (input && document.activeElement !== input) input.value = parsed.compiled.src;
-    Training.setStopRequested(true);
+    await this.stopLoopAndWait();
     Store.set({ data: { source: presetId ? 'preset' : 'equation', presetId: presetId || null, equation: parsed.compiled.src, xs: parsed.xs, ys: parsed.ys } });
     Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
     $all('#presetGrid .preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === presetId));
@@ -400,8 +438,8 @@ const App = {
     this.updateEmbeddingVisibility();
   },
 
-  resetWeights() {
-    Training.setStopRequested(true);
+  async resetWeights() {
+    await this.stopLoopAndWait();
     Training.buildModel();
     Training.setDataTensors();
     Training.resetEpochCounter();
@@ -452,7 +490,7 @@ const App = {
         const v = parseInt(noiseEl.value, 10) / 100;
         const el=$('#noiseLevelVal'); if(el) el.textContent = v === 0 ? '0' : v.toFixed(2);
       });
-      noiseEl.addEventListener('change', () => {
+      noiseEl.addEventListener('change', async () => {
         const v = parseInt(noiseEl.value, 10) / 100;
         Store.set({ training: { ...Store.get('training'), noise: v } });
         // resample current equation/preset with new noise
@@ -468,6 +506,7 @@ const App = {
         if (newData) {
           Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
           Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
+          await this.stopLoopAndWait();
           Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
           this.setStatus('idle'); this.renderAll();
           this.showToast(v===0 ? 'Noise off' : `Noise σ=${v.toFixed(2)}`, 'success');
@@ -492,7 +531,7 @@ const App = {
   setupDomain() {
     const trMin = $('#trainMin'), trMax = $('#trainMax'), evMin = $('#evalMin'), evMax = $('#evalMax');
     if (!trMin) return;
-    const apply = () => {
+    const apply = async () => {
       let tMin = parseFloat(trMin.value), tMax = parseFloat(trMax.value);
       let eMin = parseFloat(evMin.value), eMax = parseFloat(evMax.value);
       if (!isFinite(tMin) || !isFinite(tMax) || tMin >= tMax) { this.showToast('Training range: min must be < max', 'warning'); return; }
@@ -511,6 +550,7 @@ const App = {
       if (newData) {
         Store.set({ data: { ...data, xs: newData.xs, ys: newData.ys } });
         Store.set({ lossHistory: [], predictions: { xs: [], ys: [] } });
+        await this.stopLoopAndWait();
         Training.buildModel(); Training.setDataTensors(); Training.resetEpochCounter();
         this.setStatus('idle');
         try { Charts.setDomainAndReset(tMin, tMax, eMin, eMax); } catch (_) {}
@@ -567,16 +607,7 @@ const App = {
     Training.setStopRequested(false);
     this.setStatus('training');
     try { const loss = document.getElementById('lossWrap'); if (loss && !loss.open) loss.open = true; } catch (_) {}
-    // track the loop so runStep can wait for it to actually finish
-    let resolveLoop;
-    this.loopPromise = new Promise(r => { resolveLoop = r; this._loopResolve = r; });
-    try {
-      await this.runLoop();
-    } finally {
-      if (resolveLoop) resolveLoop();
-      this.loopPromise = null;
-      this._loopResolve = null;
-    }
+    await this.trackLoop();
   },
 
   async runLoop() {
@@ -602,7 +633,8 @@ const App = {
   async togglePause() {
     const run = Store.get('run');
     if (run.status === 'training') { Training.setPaused(true); this.setStatus('paused'); }
-    else if (run.status === 'paused' || run.status === 'error') { Training.setPaused(false); this.setStatus('training'); this.runLoop(); }
+    else if (run.status === 'paused' || run.status === 'error') { Training.setPaused(false); this.setStatus('training'); await this.trackLoop(); }
+    else if (run.status === 'idle') { this.showToast('Nothing to pause \u2014 press Start', 'warning'); }
   },
 
   async runStep() {
@@ -804,7 +836,9 @@ ${Array.from({length: m.hiddenLayers}, (_,i) => `            nn.Linear(${i===0 ?
       const evalMin = dom ? dom.evalMin : -2, evalMax = dom ? dom.evalMax : 2;
       const xs = [];
       for (let i=0;i<140;i++) xs.push(evalMin + (evalMax - evalMin) * i / 139);
+      const tok = ++this._predictToken;
       Training.predictXs(xs).then((ys) => {
+        if (tok !== this._predictToken) return;
         if (ys) Store.set({ predictions: { xs, ys } });
         else Charts.setPrediction(g.xs, g.ys, [], [], trainDots.xs, trainDots.ys);
       });
@@ -826,7 +860,15 @@ ${Array.from({length: m.hiddenLayers}, (_,i) => `            nn.Linear(${i===0 ?
     }
     if (data.equation) {
       try {
-        const cmp = Equation.compile(data.equation);
+        const cacheKey = data.equation + '|' + evalMin + '|' + evalMax;
+        let cmp;
+        if (this._truthCache.key === cacheKey && this._truthCache.fn) {
+          cmp = this._truthCache.fn;
+        } else {
+          cmp = Equation.compile(data.equation);
+          this._truthCache.key = cacheKey;
+          this._truthCache.fn = cmp;
+        }
         const s = Equation.sample(cmp, 140, evalMin, evalMax);
         return s;
       } catch (_) { return { xs: data.xs, ys: data.ys }; }
