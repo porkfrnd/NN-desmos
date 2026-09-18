@@ -118,10 +118,11 @@ const Charts = (() => {
         normalized: true,
         interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { labels: { color: muted, boxWidth: 14, padding: 14, font: { size: 11 } } },
+          legend: { labels: { color: muted, boxWidth: 14, padding: 14, font: { size: 11 }, filter: (item) => item.datasetIndex === 0 || item.datasetIndex === 2 } },
           tooltip: {
             backgroundColor: cssVar('--panel', '#fff'), borderColor: border, borderWidth: 1,
             titleColor: text, bodyColor: text,
+            filter: (item) => item.datasetIndex === 0 || item.datasetIndex === 2,
             callbacks: { title: (items) => items.length ? `x = ${Number(items[0].parsed.x).toFixed(3)}` : '' },
           },
         },
@@ -164,12 +165,10 @@ const Charts = (() => {
     const dots = (trainXs && trainYs) ? trainXs.map((x,i) => ({ x, y: trainYs[i] })).filter(p => Number.isFinite(p.y)) : [];
     predChart.data.datasets[0].data = gt;
     predChart.data.datasets[1].data = trail;
-    predChart.data.datasets[1].borderColor = cssVar('--accent', '#2563eb');
-    // apply trail opacity via borderColor alpha — Chart.js v4 supports it via background
     predChart.data.datasets[2].data = pr;
     predChart.data.datasets[3].data = dots;
-    // dots color follows accent
-    predChart.data.datasets[3].backgroundColor = cssVar('--accent', '#2563eb');
+    // dots color follows accent (use cached color to avoid per-frame getComputedStyle)
+    predChart.data.datasets[3].backgroundColor = (cachedColors && cachedColors.accent) || cssVar('--accent', '#2563eb');
     predChart.update('none');
   }
   function setTrainDots(xs, ys) {
@@ -235,6 +234,12 @@ const Charts = (() => {
     // called when domain changes — update view to new eval range
     view = { xMin: evalMin, xMax: evalMax, yMin: -1.6, yMax: 1.6 };
     initialView = { ...view };
+    // update cached domain so clampView uses new limits
+    cachedDomain = { trainMin, trainMax, evalMin, evalMax };
+    // update axis label to reflect new eval range
+    if (predChart) {
+      predChart.options.scales.x.title.text = `x  \u2208  [${evalMin}, ${evalMax}]`;
+    }
     applyView();
   }
 
@@ -250,9 +255,14 @@ const Charts = (() => {
     if (sy > maxSpanY) sy = maxSpanY;
     view.xMin = cx - sx/2; view.xMax = cx + sx/2;
     view.yMin = cy - sy/2; view.yMax = cy + sy/2;
-    // keep at least a bit of the original domain visible (soft clamp)
-    if (view.xMin < -3) { const d = -3 - view.xMin; view.xMin += d; view.xMax += d; }
-    if (view.xMax > 3) { const d = view.xMax - 3; view.xMin -= d; view.xMax -= d; }
+    // domain-derived x bounds (eval range ± 1), falling back to hardcoded ±3
+    let xLo = -3, xHi = 3;
+    try {
+      const dom = cachedDomain || ((typeof Store !== 'undefined' && Store.get('domain')) || null);
+      if (dom) { xLo = dom.evalMin - 1; xHi = dom.evalMax + 1; }
+    } catch (_) {}
+    if (view.xMin < xLo) { const d = xLo - view.xMin; view.xMin += d; view.xMax += d; }
+    if (view.xMax > xHi) { const d = view.xMax - xHi; view.xMin -= d; view.xMax -= d; }
     if (view.yMin < -4) { const d = -4 - view.yMin; view.yMin += d; view.yMax += d; }
     if (view.yMax > 4) { const d = view.yMax - 4; view.yMin -= d; view.yMax -= d; }
   }
