@@ -303,7 +303,7 @@ const App = {
     const apply = async () => {
       const raw = input.value.trim();
       if (!raw) { this.showError('Please type an equation, e.g.  x^2 + 6*x'); return; }
-      try { await this.applyEquation(raw, null); this.clearError(); } catch (e) { this.showError(e.message); }
+      try { await this.applyEquation(raw, null); } catch (e) { this.showError(e.message); }
     };
     btn && btn.addEventListener('click', apply);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void apply().catch(e => console.error(e)); } });
