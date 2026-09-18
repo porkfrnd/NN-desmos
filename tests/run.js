@@ -315,6 +315,134 @@ test('Tests actually load all files (regression #13)', () => {
 });
 
 
+// ── Regression: glitch fixes ─────────────────────────────────────────────
+console.log('\n── Regression: glitch fixes ──');
+
+// 1. HTML structure
+test('HTML: exactly one .app div', () => {
+  const matches = indexHtml.match(/<div class="app">/g);
+  assert.ok(matches && matches.length === 1, `expected exactly 1 .app div, got ${matches ? matches.length : 0}`);
+});
+test('HTML: gallery and footer before Settings modal comment', () => {
+  const galleryIdx = indexHtml.indexOf('<div class="gallery">');
+  const footerIdx = indexHtml.indexOf('<footer class="site-foot">');
+  const settingsCommentIdx = indexHtml.indexOf('<!-- Settings modal');
+  assert.ok(galleryIdx > 0 && footerIdx > 0, 'gallery and footer must exist');
+  assert.ok(galleryIdx < settingsCommentIdx, 'gallery must come before Settings modal');
+  assert.ok(footerIdx < settingsCommentIdx, 'footer must come before Settings modal');
+});
+test('HTML: no <h3>Loss</h3> heading', () => {
+  assert.ok(!indexHtml.includes('<h3>Loss</h3>'), 'should not have an h3 Loss heading');
+});
+test('HTML: has summary-title class', () => {
+  assert.ok(indexHtml.includes('summary-title'), 'should contain summary-title class');
+});
+
+// 2. CSS hidden rule
+test('CSS base: [hidden] with !important', () => {
+  const baseCss = fs.readFileSync(path.join(root, 'css/base.css'), 'utf8');
+  assert.ok(baseCss.includes('[hidden]') && baseCss.includes('!important'), 'base.css must have [hidden] with !important');
+});
+
+// 3. CSS dead code removed
+test('CSS components: no toolbar-main dead code', () => {
+  const compCss = fs.readFileSync(path.join(root, 'css/components.css'), 'utf8');
+  assert.ok(!compCss.includes('toolbar-main'), 'components.css should not contain toolbar-main');
+});
+
+// 4. Charts legend/tooltip filter
+test('Charts: legend filter references datasetIndex 0 and 2', () => {
+  assert.ok(chartsSrc.includes('filter'), 'charts.js must contain filter functions');
+  // Legend and tooltip filters should reference datasetIndex 0 and 2
+  const filterMatches = chartsSrc.match(/filter:?\s*\(?item\)?\s*=>\s*item\.datasetIndex\s*===\s*0\s*\|\|\s*item\.datasetIndex\s*===\s*2/g);
+  assert.ok(filterMatches && filterMatches.length >= 2, 'need legend and tooltip filter referencing datasetIndex 0 and 2');
+});
+
+// 5. Charts no per-frame style recalc, spanGaps, withAlpha
+test('Charts: setPrediction uses cachedColors for dots (no per-frame cssVar)', () => {
+  // setPrediction should reference cachedColors, not call cssVar for dataset colors
+  const setPredMatch = chartsSrc.match(/function setPrediction[\s\S]*?(?=\n  function |\n  return )/);
+  assert.ok(setPredMatch, 'setPrediction function must exist');
+  const body = setPredMatch[0];
+  assert.ok(body.includes('cachedColors'), 'setPrediction must use cachedColors for dots');
+  // cachedColors must be the primary path (checked before cssVar fallback)
+  assert.ok(body.indexOf('cachedColors') < body.indexOf('cssVar'), 'cachedColors must be checked before cssVar fallback');
+});
+test('Charts: spanGaps:false present in dataset config', () => {
+  assert.ok(chartsSrc.includes('spanGaps: false'), 'spanGaps:false must be in chart config');
+});
+test('Charts: withAlpha helper present', () => {
+  assert.ok(chartsSrc.includes('function withAlpha'), 'withAlpha helper must exist');
+});
+
+// 6. Charts domain: setDomainAndReset + clampView
+test('Charts: setDomainAndReset updates title.text and assigns cachedDomain', () => {
+  const fnMatch = chartsSrc.match(/function setDomainAndReset[\s\S]*?(?=\n  function |\n  return )/);
+  assert.ok(fnMatch, 'setDomainAndReset function must exist');
+  const body = fnMatch[0];
+  assert.ok(body.includes('title.text'), 'setDomainAndReset must update axis title.text');
+  assert.ok(body.includes('cachedDomain'), 'setDomainAndReset must assign cachedDomain');
+});
+test('Charts: clampView derives x bounds from domain evalMin/evalMax with fallback', () => {
+  const fnMatch = chartsSrc.match(/function clampView[\s\S]*?(?=\n  function |\n  return )/);
+  assert.ok(fnMatch, 'clampView function must exist');
+  const body = fnMatch[0];
+  assert.ok(body.includes('evalMin'), 'clampView must reference evalMin');
+  assert.ok(body.includes('evalMax'), 'clampView must reference evalMax');
+  assert.ok(body.includes('cachedDomain'), 'clampView must use cachedDomain');
+});
+
+// 7. App loop helpers
+test('App: stopLoopAndWait and trackLoop exist', () => {
+  assert.ok(appSrc.includes('stopLoopAndWait'), 'app.js must have stopLoopAndWait');
+  assert.ok(appSrc.includes('trackLoop'), 'app.js must have trackLoop');
+});
+test('App: runStep awaits stopLoopAndWait', () => {
+  const stepMatch = appSrc.match(/async runStep[\s\S]*?(?=\n  async |\n  [a-z]|\n\}$)/);
+  assert.ok(stepMatch, 'runStep must exist');
+  const body = stepMatch[0];
+  assert.ok(body.includes('await this.stopLoopAndWait()'), 'runStep must await stopLoopAndWait');
+});
+test('App: togglePause resumes only from paused + idle toast', () => {
+  const tpMatch = appSrc.match(/async togglePause[\s\S]*?(?=\n  async |\n  [a-z]|\n\}$)/);
+  assert.ok(tpMatch, 'togglePause must exist');
+  const body = tpMatch[0];
+  assert.ok(body.includes("'paused'"), 'togglePause must handle paused state');
+  assert.ok(body.includes("'idle'"), 'togglePause must handle idle state');
+  assert.ok(body.includes("trackLoop()"), 'togglePause must call trackLoop when resuming');
+});
+test('App: no innerHTML in file', () => {
+  assert.ok(!appSrc.includes('.innerHTML'), 'app.js must not use innerHTML');
+});
+
+// 8. App truth cache + token
+test('App: _truthCache and _predictToken present', () => {
+  assert.ok(appSrc.includes('_truthCache'), 'app.js must have _truthCache');
+  assert.ok(appSrc.includes('_predictToken'), 'app.js must have _predictToken');
+});
+test('App: _predictToken used as staleness guard in renderAll', () => {
+  // renderAll should increment _predictToken and check it in the async predict callback
+  assert.ok(appSrc.includes('++this._predictToken'), 'must increment _predictToken');
+  assert.ok(appSrc.includes('tok !== this._predictToken'), 'must check token freshness in predict callback');
+});
+
+// 9. Model/siren guards + clipYs null
+test('Model: CustomActLayer guarded on tf existence', () => {
+  const guardPattern = /typeof tf === 'undefined'/;
+  const layerBlock = modelSrc.match(/const CustomActLayer[\s\S]*?\)\(\);/);
+  assert.ok(layerBlock, 'CustomActLayer IIFE must exist');
+  assert.ok(guardPattern.test(layerBlock[0]), 'CustomActLayer must guard on typeof tf');
+});
+test('Siren: fallback checks tf before dense', () => {
+  const sirenFs = fs.readFileSync(path.join(root, 'js/siren.js'), 'utf8');
+  assert.ok(sirenFs.includes("typeof tf === 'undefined'") || sirenFs.includes('typeof tf !== \'undefined\''),
+    'siren fallback must check tf existence');
+});
+test('Presets: clipYs preserves null values (LIVE)', () => {
+  const result = clipYs([2, -2, 0.5, null]);
+  assert.deepStrictEqual(result, [1.5, -1.5, 0.5, null]);
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
