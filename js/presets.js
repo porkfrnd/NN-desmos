@@ -95,5 +95,5 @@ function samplePreset(id, count = 100, trainMin = DOMAIN_MIN, trainMax = DOMAIN_
 }
 
 function clipYs(ys, limit = 1.5) {
-  return ys.map((y) => Math.max(-limit, Math.min(limit, y)));
+  return ys.map((y) => y === null ? null : Math.max(-limit, Math.min(limit, y)));
 }
