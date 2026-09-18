@@ -100,7 +100,9 @@ const Training = (() => {
     }
   }
   // Single reusable layer class for SiLU/GELU — avoids defining a new class per layer (was leaking)
+  // Guard: if tf is not yet loaded (CDN failure), set to null instead of throwing at script load.
   const CustomActLayer = (() => {
+    if (typeof tf === 'undefined' || !tf.layers || !tf.layers.Layer) return null;
     class _CustomAct extends tf.layers.Layer {
       constructor(cfg) { super(cfg || {}); this.actName = cfg.actName; }
       call(inp) { const t = Array.isArray(inp) ? inp[0] : inp; return applyCustomActivation(t, this.actName); }
@@ -133,10 +135,15 @@ const Training = (() => {
         const layer = sirenDense(m.neuronsPerLayer, i === 0, w0);
         x = layer.apply(x);
       } else if (isCustomAct) {
-        const dense = tf.layers.dense({ units: m.neuronsPerLayer, activation: 'linear', useBias: true });
-        x = dense.apply(x);
-        const ca = new CustomActLayer({ actName: act });
-        x = ca.apply(x);
+        if (CustomActLayer) {
+          const dense = tf.layers.dense({ units: m.neuronsPerLayer, activation: 'linear', useBias: true });
+          x = dense.apply(x);
+          const ca = new CustomActLayer({ actName: act });
+          x = ca.apply(x);
+        } else {
+          // Fallback when CustomActLayer unavailable (tf not loaded or incomplete)
+          x = tf.layers.dense({ units: m.neuronsPerLayer, activation: 'tanh', useBias: true }).apply(x);
+        }
       } else {
         // built-in: relu, tanh, sigmoid, softplus, etc.
         const tfAct = act === 'sine' ? 'linear' : act;
