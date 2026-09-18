@@ -29,10 +29,24 @@ const Charts = (() => {
     } catch (_) {}
   }
   let interactBound = false;
+  let cachedColors = null;
+  let cachedDomain = null;
 
   function cssVar(name, fallback) {
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     return v || fallback;
+  }
+
+  function withAlpha(hexOrRgb, a) {
+    if (hexOrRgb.startsWith('#')) {
+      const r = parseInt(hexOrRgb.slice(1, 3), 16);
+      const g = parseInt(hexOrRgb.slice(3, 5), 16);
+      const b = parseInt(hexOrRgb.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    }
+    if (hexOrRgb.startsWith('rgb(')) return hexOrRgb.replace('rgb(', 'rgba(').replace(')', `,${a})`);
+    if (hexOrRgb.startsWith('rgba(')) return hexOrRgb.replace(/,\s*[\d.]+\)$/, `,${a})`);
+    return hexOrRgb;
   }
 
   function init(canvasPred, canvasLoss) {
@@ -49,12 +63,14 @@ const Charts = (() => {
     const border = cssVar('--border', '#d8d8d2');
     const gridCol = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
 
+    cachedColors = { accent, text, muted, border, gridCol, isDark };
+    try { cachedDomain = (typeof Store !== 'undefined' && Store.get('domain')) || null; } catch (_) { cachedDomain = null; }
     const evalLabel = `x  \u2208  [${initialView.xMin}, ${initialView.xMax}]`;
     const trainShadePlugin = {
       id: 'trainShade',
       beforeDraw(chart) {
         try {
-          const dom = (typeof Store !== 'undefined' && Store.get('domain')) || null;
+          const dom = cachedDomain || ((typeof Store !== 'undefined' && Store.get('domain')) || null);
           if (!dom) return;
           const { ctx, chartArea, scales } = chart;
           if (!chartArea) return;
@@ -88,11 +104,11 @@ const Charts = (() => {
       data: {
         datasets: [
           // 0: ground truth (dashed)
-          { label: 'Ground Truth', data: [], borderColor: muted, borderDash: [6, 4], borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.15, parsing: false, order: 3 },
+          { label: 'Ground Truth', data: [], borderColor: muted, borderDash: [6, 4], borderWidth: 1.8, pointRadius: 0, fill: false, tension: 0.15, parsing: false, spanGaps: false, order: 3 },
           // 1: prediction trail (ghost from 10 epochs ago) — beautiful desmos-like motion
-          { label: 'Trail', data: [], borderColor: accent, borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0.15, parsing: false, borderDash: [2, 6], opacity: 0.18, order: 2 },
+          { label: 'Trail', data: [], borderColor: withAlpha(accent, 0.25), borderWidth: 1.2, pointRadius: 0, fill: false, tension: 0.15, parsing: false, borderDash: [2, 6], spanGaps: false, order: 2 },
           // 2: prediction (main, glowing)
-          { label: 'Prediction', data: [], borderColor: accent, borderWidth: 2.4, pointRadius: 0, fill: false, tension: 0.15, parsing: false, order: 1 },
+          { label: 'Prediction', data: [], borderColor: accent, borderWidth: 2.4, pointRadius: 0, fill: false, tension: 0.15, parsing: false, spanGaps: false, order: 1 },
           // 3: training dots (like desmos points)
           { label: 'Samples', data: [], borderColor: 'transparent', backgroundColor: accent, pointRadius: 3, pointHoverRadius: 4, showLine: false, parsing: false, order: 0 },
         ],
