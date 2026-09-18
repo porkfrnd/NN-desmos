@@ -246,7 +246,7 @@ const App = {
   setupPresets() {
     const grid = $('#presetGrid');
     if (!grid) return;
-    grid.innerHTML = '';
+    grid.replaceChildren();
     const presetIds = ['sine', 'square', 'damped', 'composite'];
     presetIds.forEach((id) => {
       const btn = document.createElement('button');
