@@ -77,5 +77,5 @@
 .loss-details { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--panel); }
 .loss-details summary { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; cursor: pointer; list-style: none; }
 .loss-details summary::-webkit-details-marker { display: none; }
-.loss-details summary h3 { font-size: 13px; font-weight: 600; }
+.loss-details summary .summary-title { font-size: 13px; font-weight: 600; }
 .loss-details[open] summary { border-bottom: 1px solid var(--border); }
