@@ -59,7 +59,11 @@ if (typeof tf !== 'undefined' && tf.layers && tf.layers.Layer) {
 
 function sirenDense(units, isFirstLayer, w0) {
   if (typeof SirenDense === 'undefined' || SirenDense === null) {
-    // graceful fallback if tf failed to load — still trainable
+    // Check that tf is actually available before using its API.
+    if (typeof tf === 'undefined' || !tf.layers || !tf.layers.dense) {
+      throw new Error('TensorFlow.js not loaded — cannot create SIREN fallback layer');
+    }
+    // graceful fallback if SirenDense class wasn't registered — still trainable
     return tf.layers.dense({ units, activation: 'tanh' });
   }
   return new SirenDense({ units, isFirstLayer: !!isFirstLayer, w0: w0 != null ? w0 : SIREN_W0 });
