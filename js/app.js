@@ -85,7 +85,7 @@ const App = {
     this.syncAllUIFromStore();
     const def = PRESET_DEFS['sine'];
     const initEq = def && def.equation ? def.equation : 'sin(2*pi*x)';
-    try { this.applyEquation(initEq, 'sine'); } catch (e) { console.error(e); this.showToast(e.message, 'error'); }
+    this.applyEquation(initEq, 'sine').catch(e => { console.error(e); this.showToast(e.message, 'error'); });
     // URL sharing — encode equation and key config in hash, like desmos
     this.loadFromURLHash();
     // keep hash in sync (debounced)
@@ -99,10 +99,10 @@ const App = {
     // keyboard shortcuts — delightful, like desmos
     document.addEventListener('keydown', (e) => {
       if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.isContentEditable)) return;
-      if (e.code === 'Space') { e.preventDefault(); const s=Store.get('run').status; if(s==='training') this.togglePause(); else this.startTraining(); }
-      else if (e.key.toLowerCase() === 'r') { this.resetWeights(); }
+      if (e.code === 'Space') { e.preventDefault(); const s=Store.get('run').status; if(s==='training') { void this.togglePause().catch(e => console.error(e)); } else { void this.startTraining().catch(e => console.error(e)); } }
+      else if (e.key.toLowerCase() === 'r') { void this.resetWeights().catch(e => console.error(e)); }
       else if (e.key === '?' || (e.key === '/' && e.shiftKey)) { this.showToast('Shortcuts: Space = Start/Pause, R = Reset, , = Step, E = Export', 'success'); }
-      else if (e.key === ',') { this.runStep(); }
+      else if (e.key === ',') { void this.runStep().catch(e => console.error(e)); }
       else if (e.key.toLowerCase() === 'e' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); this.exportWeights(); }
     });
 
@@ -183,9 +183,9 @@ const App = {
       if (eq) {
         const input = document.getElementById('equationInput');
         if (input) input.value = eq;
-        setTimeout(() => { try { this.applyEquation(eq, preset || null); } catch (_) {} }, 0);
+        setTimeout(() => { this.applyEquation(eq, preset || null).catch(() => {}); }, 0);
       } else if (preset && PRESET_DEFS[preset]) {
-        setTimeout(() => this.loadPreset(preset), 0);
+        setTimeout(() => { void this.loadPreset(preset).catch(() => {}); }, 0);
       } else if (Object.keys(patchModel).length || Object.keys(patchTraining).length || Object.keys(patchDomain).length) {
         // hash had config but no eq/preset — rebuild with current data
         try { Training.buildModel(); Training.setDataTensors(); this.renderAll(); } catch (_) {}
@@ -261,14 +261,14 @@ const App = {
       formulaSpan.textContent = def.formula;
       btn.appendChild(nameSpan);
       btn.appendChild(formulaSpan);
-      btn.addEventListener('click', () => this.loadPreset(id));
+      btn.addEventListener('click', () => { void this.loadPreset(id).catch(e => console.error(e)); });
       grid.appendChild(btn);
     });
   },
 
   setupTuningPresets() {
     $all('[data-tuning]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         const key = btn.dataset.tuning;
         const preset = TUNING_PRESETS[key];
         if (!preset) return;
@@ -280,19 +280,19 @@ const App = {
         });
         this.syncAllUIFromStore();
         // rebuild with new config, keep data
-        this.resetWeights();
+        await this.resetWeights();
         this.showToast(preset.name + ' preset applied', 'success');
       });
     });
   },
 
-  loadPreset(id) {
+  async loadPreset(id) {
     const def = PRESET_DEFS[id];
     if (!def) return;
     const eq = def.equation || '';
     const input = $('#equationInput');
     if (input) input.value = eq;
-    this.applyEquation(eq, id);
+    await this.applyEquation(eq, id);
   },
 
   setupEquation() {
@@ -300,13 +300,13 @@ const App = {
     const btn = $('#equationApply');
     const errBox = $('#equationError');
     if (!input) return;
-    const apply = () => {
+    const apply = async () => {
       const raw = input.value.trim();
       if (!raw) { this.showError('Please type an equation, e.g.  x^2 + 6*x'); return; }
-      try { this.applyEquation(raw, null); this.clearError(); } catch (e) { this.showError(e.message); }
+      try { await this.applyEquation(raw, null); this.clearError(); } catch (e) { this.showError(e.message); }
     };
     btn && btn.addEventListener('click', apply);
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); apply(); } });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); void apply().catch(e => console.error(e)); } });
     let t;
     input.addEventListener('input', () => {
       clearTimeout(t);
@@ -336,11 +336,11 @@ const App = {
   async applyEquation(raw, presetId) {
     const input = $('#equationInput');
     const eqStr = raw && String(raw).trim() ? String(raw).trim() : (input ? input.value.trim() : '');
-    if (!eqStr) throw new Error('Empty equation. Try  x^2 + 6*x');
+    if (!eqStr) { this.showError('Empty equation. Try  x^2 + 6*x'); return; }
     const dom = Store.get('domain');
     const noise = Store.get('training').noise ?? 0;
     let parsed;
-    try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax, noise); } catch (e) { this.showError(e.message); throw e; }
+    try { parsed = Equation.sampleString(eqStr, 100, dom.trainMin, dom.trainMax, noise); } catch (e) { this.showError(e.message); return; }
     this.clearError();
     if (input && document.activeElement !== input) input.value = parsed.compiled.src;
     await this.stopLoopAndWait();
@@ -405,7 +405,7 @@ const App = {
     if (fourierSigma) fourierSigma.addEventListener('input', updFS);
     if (cheb) cheb.addEventListener('input', updCh);
 
-    const apply = () => {
+    const apply = async () => {
       const m = Store.get('model');
       Store.set({
         model: {
@@ -423,16 +423,16 @@ const App = {
       });
       this.updateOmegaVisibility();
       this.updateEmbeddingVisibility();
-      this.resetWeights();
+      await this.resetWeights();
     };
-    layersRange.addEventListener('change', apply);
-    neuronsRange.addEventListener('change', apply);
-    if (actSelect) actSelect.addEventListener('change', () => { this.updateOmegaVisibility(); apply(); });
-    if (omega) omega.addEventListener('change', apply);
-    if (embedding) embedding.addEventListener('change', () => { this.updateEmbeddingVisibility(); apply(); });
-    if (fourierN) fourierN.addEventListener('change', apply);
-    if (fourierSigma) fourierSigma.addEventListener('change', apply);
-    if (cheb) cheb.addEventListener('change', apply);
+    layersRange.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
+    neuronsRange.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
+    if (actSelect) actSelect.addEventListener('change', () => { this.updateOmegaVisibility(); void apply().catch(e => console.error(e)); });
+    if (omega) omega.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
+    if (embedding) embedding.addEventListener('change', () => { this.updateEmbeddingVisibility(); void apply().catch(e => console.error(e)); });
+    if (fourierN) fourierN.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
+    if (fourierSigma) fourierSigma.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
+    if (cheb) cheb.addEventListener('change', () => { void apply().catch(e => console.error(e)); });
     updHL(); updNL(); if(omega) updOmega(); if(fourierN) updFN(); if(fourierSigma) updFS(); if(cheb) updCh();
     this.updateOmegaVisibility();
     this.updateEmbeddingVisibility();
@@ -569,9 +569,9 @@ const App = {
       if (evMin) evMin.value = String(d.evalMin);
       if (evMax) evMax.value = String(d.evalMax);
     };
-    [trMin, trMax, evMin, evMax].forEach(el => el && el.addEventListener('change', () => {
+    [trMin, trMax, evMin, evMax].forEach(el => el && el.addEventListener('change', async () => {
       const before = { ...Store.get('domain') };
-      try { apply(); } catch (e) { revert(); throw e; }
+      try { await apply(); } catch (e) { revert(); throw e; }
       // if apply showed a toast for invalid, revert
       const d = Store.get('domain');
       if (d.trainMin >= d.trainMax || d.evalMin >= d.evalMax) revert();
@@ -584,10 +584,10 @@ const App = {
     const stepBtn = $('#btnStep');
     const resetBtn = $('#btnResetWeights');
     const exportBtn = $('#btnExport');
-    if (startBtn) startBtn.addEventListener('click', () => this.startTraining());
-    if (pauseBtn) pauseBtn.addEventListener('click', () => this.togglePause());
-    if (stepBtn) stepBtn.addEventListener('click', () => this.runStep());
-    if (resetBtn) resetBtn.addEventListener('click', () => this.resetWeights());
+    if (startBtn) startBtn.addEventListener('click', () => { void this.startTraining().catch(e => { console.error(e); }); });
+    if (pauseBtn) pauseBtn.addEventListener('click', () => { void this.togglePause().catch(e => { console.error(e); }); });
+    if (stepBtn) stepBtn.addEventListener('click', () => { void this.runStep().catch(e => { console.error(e); }); });
+    if (resetBtn) resetBtn.addEventListener('click', () => { void this.resetWeights().catch(e => { console.error(e); }); });
     if (exportBtn) exportBtn.addEventListener('click', () => this.exportWeights());
     const exportPngBtn = $('#btnExportPNG');
     if (exportPngBtn) exportPngBtn.addEventListener('click', () => this.exportPNG());
@@ -633,32 +633,14 @@ const App = {
   async togglePause() {
     const run = Store.get('run');
     if (run.status === 'training') { Training.setPaused(true); this.setStatus('paused'); }
-    else if (run.status === 'paused' || run.status === 'error') { Training.setPaused(false); this.setStatus('training'); await this.trackLoop(); }
+    else if (run.status === 'paused') { Training.setPaused(false); this.setStatus('training'); await this.trackLoop(); }
     else if (run.status === 'idle') { this.showToast('Nothing to pause \u2014 press Start', 'warning'); }
   },
 
   async runStep() {
     const data = Store.get('data');
     if (!data.xs || data.xs.length === 0) { this.showToast('Plot an equation first', 'warning'); return; }
-    // robust stop: tell the loop to exit and wait for it to actually finish
-    Training.setStopRequested(true);
-    if (this.loopPromise) {
-      try {
-        // wait for the loop to observe the flag and exit (max 2s)
-        await Promise.race([
-          this.loopPromise,
-          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000)),
-        ]);
-      } catch (_) {
-        // timeout — force resolve
-        if (this._loopResolve) try { this._loopResolve(); } catch (_) {}
-        this.loopPromise = null;
-        this._loopResolve = null;
-      }
-    } else {
-      // no active loop, but give any in-flight runEpochs chunk a moment to see the flag
-      await new Promise(r => setTimeout(r, 80));
-    }
+    await this.stopLoopAndWait();
     Training.setStopRequested(false);
     if (!Training.modelExists) { Training.buildModel(); Training.setDataTensors(); }
     const wasPaused = Training.isPaused;
@@ -701,12 +683,12 @@ const App = {
   // self-explaining: gallery, share, and code are the delightful extras that make it feel like a product
   setupGallery() {
     $all('.gallery-card').forEach(card => {
-      card.addEventListener('click', () => {
+      card.addEventListener('click', async () => {
         const eq = card.dataset.eq;
         if (!eq) return;
         const input = document.getElementById('equationInput');
         if (input) input.value = eq;
-        try { this.applyEquation(eq, null); } catch (e) { this.showToast(e.message, 'error'); }
+        try { await this.applyEquation(eq, null); } catch (e) { this.showToast(e.message, 'error'); }
       });
     });
   },
